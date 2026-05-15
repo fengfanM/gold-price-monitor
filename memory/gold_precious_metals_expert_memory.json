@@ -1,0 +1,261 @@
+{
+  "version": "2026-05-16.m1",
+  "title": "Gold Precious Metals Expert Memory",
+  "language": "zh-CN",
+  "mission": "Build a professional, explainable, backtestable and risk-controlled gold/precious-metals investment assistant.",
+  "principles": [
+    "Do not inflate win rate or confidence for cosmetic reasons.",
+    "Every strong signal must be explainable, backtestable and risk-controlled.",
+    "Gold analysis prioritizes monetary attribute, then safe-haven attribute, then commodity attribute.",
+    "Short-term speculation rules must not reuse physical-gold long-term holding logic.",
+    "No signal can be strong without invalidation price, stop-loss logic and data-source health check."
+  ],
+  "asset_attribute_priority": {
+    "gold": ["monetary", "safe_haven", "commodity"],
+    "silver": ["industrial", "speculative", "monetary"],
+    "platinum": ["industrial", "supply_demand"],
+    "palladium": ["industrial", "supply_demand"]
+  },
+  "market_sessions": [
+    {
+      "name": "Asia",
+      "behavior": "often range-bound, digestion and false-breakout prone",
+      "model_rule": "downweight breakout-only signals unless confirmed by Europe/US session"
+    },
+    {
+      "name": "Europe",
+      "behavior": "direction formation and London spot confirmation",
+      "model_rule": "increase attention to DXY, yields and London spot reference"
+    },
+    {
+      "name": "US",
+      "behavior": "macro data and Fed events often set trend",
+      "model_rule": "event risk and volatility filters must be active"
+    }
+  ],
+  "fundamental_factor_tiers": {
+    "tier_1_long_term": [
+      "real_interest_rate",
+      "fed_policy",
+      "dxy",
+      "us_10y_yield"
+    ],
+    "tier_2_mid_term": [
+      "cpi",
+      "core_pce",
+      "nonfarm_payrolls",
+      "unemployment_rate",
+      "pmi",
+      "gdp",
+      "central_bank_gold_buying"
+    ],
+    "tier_3_short_term": [
+      "geopolitics",
+      "cftc_cot",
+      "gld_etf_holdings",
+      "wgc_etf_flow",
+      "seasonality",
+      "gold_silver_ratio",
+      "platinum_gold_spread"
+    ]
+  },
+  "technical_toolkit": {
+    "timeframes": {
+      "long_term": ["monthly", "quarterly"],
+      "swing": ["daily", "4h"],
+      "intraday": ["1h", "30m", "15m"],
+      "scalping": ["5m", "1m"]
+    },
+    "patterns": {
+      "reversal": [
+        "double_top",
+        "double_bottom",
+        "head_and_shoulders",
+        "inverse_head_and_shoulders",
+        "rounded_top",
+        "rounded_bottom",
+        "engulfing",
+        "morning_star",
+        "evening_star"
+      ],
+      "continuation": [
+        "triangle",
+        "rectangle_range",
+        "flag",
+        "wedge"
+      ]
+    },
+    "indicators": [
+      "ma5",
+      "ma10",
+      "ma20",
+      "ma60",
+      "ma120",
+      "macd",
+      "bollinger_bands",
+      "rsi",
+      "fibonacci_retracement",
+      "cci",
+      "atr"
+    ]
+  },
+  "strategy_styles": [
+    {
+      "name": "macro_long_term_trend",
+      "holding_period": "months_to_years",
+      "key_inputs": ["real_interest_rate", "dxy", "debt_cycle", "central_bank_buying"],
+      "ui_output": ["long_term_allocation_score", "macro_regime", "batch_accumulation_zone"]
+    },
+    {
+      "name": "swing_trading",
+      "holding_period": "3_to_15_trading_days",
+      "key_inputs": ["daily_trend", "4h_structure", "weekly_fundamentals", "risk_reward"],
+      "hard_rule": "risk_reward_ratio_must_be_at_least_3_to_1_for_high_confidence"
+    },
+    {
+      "name": "intraday_event_driven",
+      "holding_period": "same_day",
+      "key_inputs": ["cpi", "nonfarm_payrolls", "fomc", "geopolitical_news"],
+      "hard_rule": "avoid chasing first spike during high-impact event window"
+    },
+    {
+      "name": "low_risk_arbitrage",
+      "holding_period": "mean_reversion_or_spread_convergence",
+      "key_inputs": ["cash_futures_basis", "calendar_spread", "gold_silver_ratio", "cross_market_premium"]
+    }
+  ],
+  "risk_rules": {
+    "position_limits": {
+      "long_term_max_account_pct": 15,
+      "swing_max_account_pct": 10,
+      "intraday_max_account_pct": 5,
+      "absolute_no_heavy_position_pct": 20
+    },
+    "loss_limits": {
+      "single_trade_max_account_loss_pct": 2,
+      "daily_drawdown_pause_pct": 5,
+      "total_drawdown_force_review_pct": 10
+    },
+    "execution_rules": [
+      "no_averaging_down_against_trend",
+      "no_locking_position_to_avoid_stop_loss",
+      "reduce_or_flat_before_major_data_or_weekend_geopolitical_risk",
+      "pyramid_only_with_trend_and_after_profit_buffer"
+    ]
+  },
+  "signal_requirements": {
+    "required_fields": [
+      "basis",
+      "probability",
+      "entry_zone",
+      "stop_loss",
+      "take_profit_1",
+      "take_profit_2",
+      "invalidation_condition",
+      "position_suggestion",
+      "data_health"
+    ],
+    "strong_signal_gates": [
+      "critical_data_sources_healthy",
+      "risk_reward_ratio_at_least_2_to_1_prefer_3_to_1",
+      "multi_timeframe_not_in_strong_conflict",
+      "selective_backtest_win_rate_above_baseline",
+      "sample_size_sufficient_or_signal_must_be_downgraded",
+      "major_event_risk_not_uncontrolled"
+    ]
+  },
+  "backtest_requirements": {
+    "metrics": [
+      "qualified_signal_win_rate",
+      "baseline_win_rate",
+      "average_return",
+      "profit_factor",
+      "max_drawdown",
+      "mae",
+      "mfe",
+      "sample_size",
+      "confidence_interval"
+    ],
+    "buckets": [
+      "pattern",
+      "timeframe",
+      "market_regime",
+      "macro_regime",
+      "session",
+      "event_window"
+    ]
+  },
+  "avoidance_rules": [
+    "no_mystical_indicators",
+    "no_livestream_call_following",
+    "no_betting_high_impact_data_with_heavy_position",
+    "no_short_timeframe_against_large_timeframe_without_downgrade",
+    "no_technical_only_trade_against_real_rate_and_dxy_pressure",
+    "no_frequent_strategy_switching"
+  ],
+  "product_roadmap": [
+    "M5.2 candlestick pattern library",
+    "M6 multi-timeframe confluence matrix",
+    "M9 bucketed backtest by pattern/timeframe/regime",
+    "M8 trade plan assistant with entry/stop/take-profit/position",
+    "M7 event-driven risk model",
+    "M10 review journal and performance attribution"
+  ],
+  "executable_factor_checklists": {
+    "provider_health_features": [
+      "critical_provider_live_ratio",
+      "core_provider_live_ratio",
+      "min_critical_quality_score",
+      "avg_scoring_latency_weight",
+      "provider_failure_streak_max",
+      "official_csv_coverage_ratio"
+    ],
+    "macro_features": [
+      "real_rate_score",
+      "real_rate_regime",
+      "dxy_pressure_score",
+      "inflation_support_score",
+      "cny_gold_premium_score"
+    ],
+    "flow_features": [
+      "cot_positioning_score",
+      "crowding_risk",
+      "etf_flow_score",
+      "flow_divergence",
+      "futures_participation_score",
+      "official_sector_support"
+    ],
+    "technical_features": [
+      "trend_confluence_score",
+      "volatility_regime",
+      "structure_rr_score",
+      "pattern_quality_score"
+    ],
+    "event_sentiment_features": [
+      "event_risk_level",
+      "safe_haven_confirmation",
+      "sentiment_explain_score"
+    ]
+  },
+  "strong_signal_hard_gates": [
+    "critical providers must be healthy and no critical provider reliabilityRisk can be high",
+    "risk_reward_ratio must be above 2_to_1, preferably 3_to_1",
+    "higher timeframe trend must not strongly conflict with execution timeframe",
+    "no chase signal inside the 30 minutes before major macro events or the first spike after release",
+    "bucketed backtest must beat baseline with adequate sample size or the signal is downgraded to watch"
+  ],
+  "trade_plan_required_outputs": [
+    "entry_zone",
+    "stop_loss",
+    "take_profit_1",
+    "take_profit_2",
+    "invalidation_condition",
+    "position_suggestion",
+    "data_health"
+  ],
+  "source_documents": [
+    "docs/GOLD_PRECIOUS_METALS_EXPERT_KNOWLEDGE_BASE.md",
+    "docs/GOLD_TRADING_MODEL_INTEGRATION_PLAN.md",
+    "docs/DATA_SOURCE_PROVIDER_AUDIT.md"
+  ]
+}

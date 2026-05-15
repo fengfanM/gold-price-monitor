@@ -3,8 +3,23 @@
   "outputDirectory": "apps/web/dist",
   "installCommand": "npm install",
   "env": {
-    "DATA_DIR": "/tmp/gold-price-monitor"
+    "DATA_DIR": "/tmp/gold-price-monitor",
+    "ENABLE_INLINE_MARKET_CONTEXT": "0"
   },
+  "functions": {
+    "api/cron/ingest.ts": {
+      "maxDuration": 60
+    },
+    "api/providers/health.ts": {
+      "maxDuration": 30
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/ingest",
+      "schedule": "0 0 * * *"
+    }
+  ],
   "rewrites": [
     {
       "source": "/((?!api/.*).*)",

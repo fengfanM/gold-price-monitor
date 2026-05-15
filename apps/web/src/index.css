@@ -27,10 +27,16 @@ body,
   min-height: 100%;
 }
 
+html {
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   min-width: 320px;
   background: #eef2f7;
+  overflow-x: hidden;
+  touch-action: pan-y;
 }
 
 h1,
@@ -45,4 +51,14 @@ input,
 select,
 textarea {
   font: inherit;
+}
+
+@media (max-width: 720px) {
+  :root {
+    line-height: 1.42;
+  }
+
+  body {
+    background: #f3f6fb;
+  }
 }

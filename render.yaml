@@ -2,18 +2,39 @@ services:
   - type: web
     name: gold-price-monitor
     runtime: node
-    plan: free
+    plan: starter
     buildCommand: npm install && npm run build
-    startCommand: npm start
-    healthCheckPath: /api/health
+    startCommand: npm run start --workspace server
     envVars:
       - key: NODE_ENV
         value: production
-      - key: POLL_INTERVAL_MS
-        value: "60000"
-      - key: STALE_MS
-        value: "300000"
-      - key: ALERT_DROP_THRESHOLD
-        value: "0.01"
-      - key: ALERT_DRAWDOWN_THRESHOLD
-        value: "0.015"
+      - key: STORAGE_ADAPTER
+        value: sqlite
+      - key: DATA_DIR
+        value: /var/data/gold-monitor
+      - key: SQLITE_FILE
+        value: /var/data/gold-monitor/gold-monitor.sqlite
+      - key: MARKET_PROVIDER_TIMEOUT_MS
+        value: "2500"
+    disk:
+      name: gold-monitor-data
+      mountPath: /var/data
+      sizeGB: 1
+
+  - type: web
+    name: gold-postgres-gateway
+    runtime: node
+    plan: starter
+    buildCommand: npm install && npm run build --workspace server
+    startCommand: npm run start:postgres-gateway --workspace server
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: POSTGRES_GATEWAY_PORT
+        value: "8790"
+      - key: POSTGRES_SSL
+        value: "1"
+      - key: DATABASE_URL
+        sync: false
+      - key: POSTGRES_HTTP_TOKEN
+        sync: false
