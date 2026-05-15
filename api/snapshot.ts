@@ -8,7 +8,10 @@ export default async function handler(_request: VercelRequest, response: VercelR
     await service.refreshIfStale()
     response.status(200).json({
       success: true,
-      data: service.getHistoryResponse(),
+      data: {
+        quote: service.getQuoteResponse(),
+        history: service.getHistoryResponse(),
+      },
     })
   } catch (error) {
     response.status(502).json({

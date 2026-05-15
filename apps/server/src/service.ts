@@ -19,6 +19,7 @@ const ALERT_DRAWDOWN_THRESHOLD = Number(
 )
 const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000
 const STALE_MS = Number(process.env.STALE_MS ?? '300000')
+const DEFAULT_REFRESH_TTL_MS = Number(process.env.REFRESH_TTL_MS ?? '25000')
 
 export class QuoteService {
   private history: HistoryPoint[] = []
@@ -43,6 +44,18 @@ export class QuoteService {
     })
 
     return this.lastRefreshPromise
+  }
+
+  async refreshIfStale(maxAgeMs = DEFAULT_REFRESH_TTL_MS) {
+    if (!this.latestQuote) {
+      await this.refresh()
+      return
+    }
+
+    const fetchedAtMs = new Date(this.latestQuote.fetchedAt).getTime()
+    if (!Number.isFinite(fetchedAtMs) || Date.now() - fetchedAtMs >= maxAgeMs) {
+      await this.refresh()
+    }
   }
 
   getQuoteResponse(): QuoteApiResponse {

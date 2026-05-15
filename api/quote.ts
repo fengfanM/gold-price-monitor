@@ -5,7 +5,7 @@ import { getQuoteService } from './_service.js'
 export default async function handler(_request: VercelRequest, response: VercelResponse) {
   try {
     const service = await getQuoteService()
-    await service.refresh()
+    await service.refreshIfStale()
     response.status(200).json({
       success: true,
       data: service.getQuoteResponse(),

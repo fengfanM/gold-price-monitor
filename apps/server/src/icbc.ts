@@ -8,6 +8,7 @@ const PAGE_URL =
 const ASYNC_URL =
   'https://mybank.icbc.com.cn/servlet/AsynGetDataServlet?tranCode=A00622'
 const PRODUCT_CODE = '080020000521'
+const ICBC_TIMEOUT_MS = Number(process.env.ICBC_TIMEOUT_MS ?? '3500')
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
 
@@ -61,7 +62,7 @@ function requestText(url: string): Promise<string> {
       },
     )
 
-    request.setTimeout(10_000, () => {
+    request.setTimeout(ICBC_TIMEOUT_MS, () => {
       request.destroy(new Error('请求超时'))
     })
     request.on('error', reject)

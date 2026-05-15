@@ -56,6 +56,7 @@ type OpportunityInfo = {
 type QuotePayload = {
   price: number
   updatedAt: string
+  fetchedAt?: string
   sourceName: string
   sourceKind: 'official' | 'fallback'
   sourceStatus: {
@@ -119,6 +120,11 @@ type HistoryPayload = {
   history: HistoryPoint[]
 }
 
+type SnapshotPayload = {
+  quote: QuotePayload
+  history: HistoryPayload
+}
+
 type ApiEnvelope<T> = {
   success: boolean
   data: T
@@ -150,6 +156,15 @@ type CandleHover = {
   high: number
   low: number
   close: number
+}
+
+type DisplayAnchor = {
+  label: string
+  price: number | null
+  spread: number | null
+  premiumPercent: number | null
+  withinRange: boolean | null
+  note: string
 }
 
 const REFRESH_INTERVAL_MS = 15_000
@@ -195,38 +210,26 @@ function App() {
     setLastAttemptAt(new Date().toISOString())
 
     try {
-      const [quoteResponse, historyResponse] = await Promise.all([
-        fetch('/api/quote', {
-          headers: { Accept: 'application/json' },
-          cache: 'no-store',
-          signal,
-        }),
-        fetch('/api/history', {
-          headers: { Accept: 'application/json' },
-          cache: 'no-store',
-          signal,
-        }),
-      ])
+      const snapshotResponse = await fetch('/api/snapshot', {
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+        signal,
+      })
 
-      if (!quoteResponse.ok || !historyResponse.ok) {
-        throw new Error(`接口状态异常：${quoteResponse.status}/${historyResponse.status}`)
+      if (!snapshotResponse.ok) {
+        throw new Error(`接口状态异常：${snapshotResponse.status}`)
       }
 
-      const quoteJson = (await quoteResponse.json()) as ApiEnvelope<QuotePayload>
-      const historyJson = (await historyResponse.json()) as ApiEnvelope<HistoryPayload>
+      const snapshotJson = (await snapshotResponse.json()) as ApiEnvelope<SnapshotPayload>
 
-      if (!quoteJson.success || !quoteJson.data) {
-        throw new Error(quoteJson.error || '报价接口返回空数据')
-      }
-
-      if (!historyJson.success || !historyJson.data) {
-        throw new Error(historyJson.error || '历史接口返回空数据')
+      if (!snapshotJson.success || !snapshotJson.data?.quote || !snapshotJson.data.history) {
+        throw new Error(snapshotJson.error || '快照接口返回空数据')
       }
 
       startTransition(() => {
-        setQuote(quoteJson.data)
+        setQuote(snapshotJson.data.quote)
         setHistory(
-          (historyJson.data.history ?? []).slice().sort((left, right) => {
+          (snapshotJson.data.history.history ?? []).slice().sort((left, right) => {
             return new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime()
           }),
         )
@@ -287,7 +290,8 @@ function App() {
     return now - updatedMs > STALE_AFTER_MS ? 'stale' : 'live'
   }, [quote, error, now])
 
-  const recentHistory = useMemo(() => selectRecentHistory(history, 24), [history])
+  const renderableHistory = useMemo(() => buildRenderableHistory(history, quote), [history, quote])
+  const recentHistory = useMemo(() => selectRecentHistory(renderableHistory, 24), [renderableHistory])
   const intradayData = useMemo(() => buildIntradayData(recentHistory), [recentHistory])
   const activeTimeframe = TIMEFRAMES.find((item) => item.id === timeframe) ?? TIMEFRAMES[1]
   const candleData = useMemo(
@@ -298,11 +302,11 @@ function App() {
   const sourceMeta = SOURCE_META[sourceHealth]
   const lastUpdatedText = quote ? formatDateTime(quote.updatedAt) : '--'
   const lastAttemptText = lastAttemptAt ? formatDateTime(lastAttemptAt) : '--'
-  const anchorPrice = quote?.marketReference.calibration.anchorPrice ?? null
-  const anchorSpread = quote?.marketReference.calibration.spread ?? null
-  const anchorPremium = quote?.marketReference.calibration.premiumPercent ?? null
-  const withinReferenceRange =
-    quote?.marketReference.calibration.withinReferenceRange ?? null
+  const displayAnchor = useMemo(() => buildDisplayAnchor(quote), [quote])
+  const anchorPrice = displayAnchor.price
+  const anchorSpread = displayAnchor.spread
+  const anchorPremium = displayAnchor.premiumPercent
+  const withinReferenceRange = displayAnchor.withinRange
   const buySignal = useMemo(() => normalizeOpportunity(quote), [quote])
   const signalMeta = getOpportunityMeta(buySignal?.level ?? 'none')
   const signalScoreText = formatScore(buySignal?.score ?? null)
@@ -328,7 +332,7 @@ function App() {
         <Ticker label="高" value={quote ? currencyFormatter.format(quote.stats24h.high24h) : '--'} />
         <Ticker label="低" value={quote ? currencyFormatter.format(quote.stats24h.low24h) : '--'} />
         <Ticker
-          label="锚点"
+          label="参考"
           value={anchorPrice === null ? '--' : currencyFormatter.format(anchorPrice)}
         />
         <Ticker
@@ -403,9 +407,11 @@ function App() {
               {TIMEFRAMES.map((item) => (
                 <button
                   className={timeframe === item.id ? 'is-active' : ''}
-                  disabled={viewMode !== 'candles'}
                   key={item.id}
-                  onClick={() => setTimeframe(item.id)}
+                  onClick={() => {
+                    setTimeframe(item.id)
+                    setViewMode('candles')
+                  }}
                   type="button"
                 >
                   {item.label}
@@ -466,7 +472,7 @@ function App() {
 
           <Panel title="联合校准" icon={<Target size={16} />}>
             <StatLine
-              label={quote?.marketReference.calibration.anchorSymbol ?? '锚点'}
+              label={displayAnchor.label}
               value={anchorPrice === null ? '--' : currencyFormatter.format(anchorPrice)}
             />
             <StatLine
@@ -483,6 +489,7 @@ function App() {
               label="区间"
               value={withinReferenceRange === null ? '--' : withinReferenceRange ? '内' : '外'}
             />
+            <p className="panel-note">{displayAnchor.note}</p>
           </Panel>
 
           <Panel title="上金所延时行情">
@@ -501,6 +508,11 @@ function App() {
                   <span>{item ? currencyFormatter.format(item.lowPrice) : '--'}</span>
                 </div>
               ))}
+              {quoteRows.every((item) => item === null || item === undefined) ? (
+                <p className="panel-note">
+                  上金所延时锚暂未返回有效报价，页面已用工行日内高低做临时参考。
+                </p>
+              ) : null}
             </div>
           </Panel>
         </aside>
@@ -591,6 +603,60 @@ function StatLine(props: {
   )
 }
 
+function buildDisplayAnchor(quote: QuotePayload | null): DisplayAnchor {
+  if (!quote) {
+    return {
+      label: '参考',
+      price: null,
+      spread: null,
+      premiumPercent: null,
+      withinRange: null,
+      note: '等待行情快照。',
+    }
+  }
+
+  const calibration = quote.marketReference.calibration
+  if (calibration.anchorPrice !== null) {
+    return {
+      label: calibration.anchorSymbol ?? '上金所锚点',
+      price: calibration.anchorPrice,
+      spread: calibration.spread,
+      premiumPercent: calibration.premiumPercent,
+      withinRange: calibration.withinReferenceRange,
+      note: calibration.note,
+    }
+  }
+
+  const dayLow = quote.dayRange.low
+  const dayHigh = quote.dayRange.high
+  if (
+    Number.isFinite(dayLow) &&
+    Number.isFinite(dayHigh) &&
+    dayLow > 0 &&
+    dayHigh >= dayLow
+  ) {
+    const midpoint = (dayLow + dayHigh) / 2
+    const spread = quote.price - midpoint
+    return {
+      label: '工行日内中枢',
+      price: midpoint,
+      spread,
+      premiumPercent: midpoint > 0 ? spread / midpoint : null,
+      withinRange: quote.price >= dayLow && quote.price <= dayHigh,
+      note: '上金所锚点暂不可用，临时以工行日内高低中枢辅助读盘。',
+    }
+  }
+
+  return {
+    label: '参考',
+    price: null,
+    spread: null,
+    premiumPercent: null,
+    withinRange: null,
+    note: '参考锚暂不可用。',
+  }
+}
+
 function IntradayChartPanel(props: {
   priceData: LineDatum[]
   referenceData: LineDatum[]
@@ -602,7 +668,7 @@ function IntradayChartPanel(props: {
   const [hover, setHover] = useState<IntradayHover | null>(null)
 
   useEffect(() => {
-    if (!containerRef.current || props.priceData.length < 2) {
+    if (!containerRef.current || props.priceData.length < 1) {
       return
     }
 
@@ -694,7 +760,7 @@ function IntradayChartPanel(props: {
           }
         />
       </div>
-      {props.priceData.length < 2 ? (
+      {props.priceData.length < 1 ? (
         <div className="empty-chart">
           {props.isLoading ? '正在加载' : '样本不足'}
         </div>
@@ -715,7 +781,7 @@ function CandlestickChartPanel(props: {
   const [hover, setHover] = useState<CandleHover | null>(null)
 
   useEffect(() => {
-    if (!containerRef.current || props.candleData.length < 2) {
+    if (!containerRef.current || props.candleData.length < 1) {
       return
     }
 
@@ -792,7 +858,7 @@ function CandlestickChartPanel(props: {
         <DataItem label="低" value={formatMaybePrice(hover?.low ?? null)} tone="down" />
         <DataItem label="收" value={formatMaybePrice(hover?.close ?? props.latestPrice)} />
       </div>
-      {props.candleData.length < 2 ? (
+      {props.candleData.length < 1 ? (
         <div className="empty-chart">
           {props.isLoading ? '正在加载' : '样本不足'}
         </div>
@@ -812,8 +878,47 @@ function DataItem(props: { label: string; value: string; tone?: 'up' | 'down' })
   )
 }
 
+function buildRenderableHistory(history: HistoryPoint[], quote: QuotePayload | null) {
+  const points = [...history]
+  if (quote) {
+    points.push({
+      price: quote.price,
+      timestamp: quote.fetchedAt ?? quote.updatedAt,
+      referenceAnchorPrice: quote.marketReference.calibration.anchorPrice,
+      referenceAu9999Price: quote.marketReference.au9999?.latestPrice ?? null,
+    })
+  }
+
+  const deduped = new Map<number, HistoryPoint>()
+  for (const point of points) {
+    const timestampMs = new Date(point.timestamp).getTime()
+    if (!Number.isFinite(timestampMs) || !Number.isFinite(point.price)) {
+      continue
+    }
+    deduped.set(timestampMs, point)
+  }
+
+  const sorted = [...deduped.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map((entry) => entry[1])
+
+  if (sorted.length !== 1) {
+    return sorted
+  }
+
+  const onlyPoint = sorted[0]
+  const timestampMs = new Date(onlyPoint.timestamp).getTime()
+  return [
+    {
+      ...onlyPoint,
+      timestamp: new Date(timestampMs - 60_000).toISOString(),
+    },
+    onlyPoint,
+  ]
+}
+
 function selectRecentHistory(history: HistoryPoint[], windowHours: number) {
-  const latest = history.at(-1)
+  const latest = history[history.length - 1]
   if (!latest) {
     return history
   }

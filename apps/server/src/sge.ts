@@ -4,6 +4,7 @@ import https from 'node:https'
 import type { MarketReferenceQuote } from './types.js'
 
 const SGE_DELAYED_URL = 'https://sge.com.cn/h5_sjzx/yshq'
+const SGE_TIMEOUT_MS = Number(process.env.SGE_TIMEOUT_MS ?? '1200')
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
 
@@ -40,7 +41,7 @@ function requestText(url: string): Promise<string> {
       },
     )
 
-    request.setTimeout(10_000, () => {
+    request.setTimeout(SGE_TIMEOUT_MS, () => {
       request.destroy(new Error('SGE 请求超时'))
     })
     request.on('error', reject)

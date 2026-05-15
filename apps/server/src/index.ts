@@ -17,7 +17,7 @@ async function main() {
 
   app.get('/api/quote', async (_request, response) => {
     try {
-      await service.refresh()
+      await service.refreshIfStale()
       response.json({
         success: true,
         data: service.getQuoteResponse(),
@@ -30,11 +30,37 @@ async function main() {
     }
   })
 
-  app.get('/api/history', (_request, response) => {
-    response.json({
-      success: true,
-      data: service.getHistoryResponse(),
-    })
+  app.get('/api/history', async (_request, response) => {
+    try {
+      await service.refreshIfStale()
+      response.json({
+        success: true,
+        data: service.getHistoryResponse(),
+      })
+    } catch (error) {
+      response.status(502).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  })
+
+  app.get('/api/snapshot', async (_request, response) => {
+    try {
+      await service.refreshIfStale()
+      response.json({
+        success: true,
+        data: {
+          quote: service.getQuoteResponse(),
+          history: service.getHistoryResponse(),
+        },
+      })
+    } catch (error) {
+      response.status(502).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
   })
 
   app.get('/api/health', (_request, response) => {
