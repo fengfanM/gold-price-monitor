@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: gold-price-monitor
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: POLL_INTERVAL_MS
+        value: "60000"
+      - key: STALE_MS
+        value: "300000"
+      - key: ALERT_DROP_THRESHOLD
+        value: "0.01"
+      - key: ALERT_DRAWDOWN_THRESHOLD
+        value: "0.015"

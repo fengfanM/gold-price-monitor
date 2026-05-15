@@ -1,0 +1,18 @@
+{
+  "name": "gold-price-monitor",
+  "private": true,
+  "version": "0.1.0",
+  "description": "工银积存金实时监控网页",
+  "workspaces": [
+    "apps/web",
+    "apps/server"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace web",
+    "dev:server": "npm run dev --workspace server",
+    "build:web": "npm run build --workspace web",
+    "build:server": "npm run build --workspace server",
+    "build": "npm run build:server && npm run build:web",
+    "start": "npm run start --workspace server"
+  }
+}
