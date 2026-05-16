@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { buildBacktestMonitor } from './backtest.js'
+import { buildBacktestMonitor, buildExternalModelBacktestGate } from './backtest.js'
 import type { BacktestSnapshot, OpportunityLevel } from './types.js'
 
 describe('selective backtest monitor', () => {
@@ -48,7 +48,140 @@ describe('selective backtest monitor', () => {
     assert.equal(Boolean(macroBucket), true)
     assert.equal(patternBucket?.qualifiedSamples, 2)
   })
+
+  it('audits external model performance by probability, local agreement, session and event buckets', () => {
+    const snapshots = [
+      makeSnapshot('2026-05-16T09:00:00.000Z', 100, 64, 'watch', 'double_bottom', 'supportive', {
+        externalModelUpProbability: 0.66,
+        externalModelConfidence: 78,
+        modelProbability: 0.62,
+        eventRiskLevel: 'none',
+      }),
+      makeSnapshot('2026-05-16T09:01:00.000Z', 102, 38, 'none', null, 'neutral'),
+      makeSnapshot('2026-05-16T09:02:00.000Z', 101, 66, 'watch', 'double_bottom', 'supportive', {
+        externalModelUpProbability: 0.68,
+        externalModelConfidence: 74,
+        modelProbability: 0.6,
+        eventRiskLevel: 'none',
+      }),
+      makeSnapshot('2026-05-16T09:03:00.000Z', 104, 35, 'none', null, 'pressure'),
+      makeSnapshot('2026-05-16T09:04:00.000Z', 103, 35, 'none', null, 'neutral'),
+    ]
+
+    const monitor = buildBacktestMonitor(snapshots, 1)
+    const probabilityBucket = monitor.externalModel.buckets.find((bucket) => bucket.key === 'external_probability:p65_70')
+    const agreementBucket = monitor.externalModel.buckets.find((bucket) => bucket.key === 'model_vs_local:bullish_bullish')
+    const eventBucket = monitor.externalModel.buckets.find((bucket) => bucket.key === 'event:none')
+
+    assert.equal(monitor.externalModel.liveCoverage !== null && monitor.externalModel.liveCoverage > 0, true)
+    assert.equal(Boolean(probabilityBucket), true)
+    assert.equal(Boolean(agreementBucket), true)
+    assert.equal(Boolean(eventBucket), true)
+    assert.equal(probabilityBucket?.qualifiedSamples, 2)
+    assert.equal(probabilityBucket?.brierScore !== null, true)
+    assert.equal(probabilityBucket?.excessWinRate !== null, true)
+  })
+
+  it('uses external model bucket history to block weak buckets and allow strong agreement buckets', () => {
+    const strongSnapshots = Array.from({ length: 22 }, (_, index) => {
+      return makeSnapshot(
+        new Date(Date.UTC(2026, 4, 16, 9, index)).toISOString(),
+        100 + index,
+        66,
+        'watch',
+        'double_bottom',
+        'supportive',
+        {
+          externalModelUpProbability: 0.66,
+          externalModelConfidence: 82,
+          modelProbability: 0.62,
+          externalModelStatus: 'live',
+          externalModelProvider: 'chronos',
+        },
+      )
+    })
+    const strongGate = buildExternalModelBacktestGate(strongSnapshots, strongSnapshots[strongSnapshots.length - 2], 1)
+
+    assert.equal(strongGate.status, 'strong')
+    assert.equal(strongGate.weightMultiplier, 1)
+
+    const weakSnapshots = Array.from({ length: 14 }, (_, index) => {
+      return makeSnapshot(
+        new Date(Date.UTC(2026, 4, 16, 10, index)).toISOString(),
+        100 - index,
+        66,
+        'watch',
+        'double_bottom',
+        'supportive',
+        {
+          externalModelUpProbability: 0.66,
+          externalModelConfidence: 80,
+          modelProbability: 0.62,
+          externalModelStatus: 'live',
+          externalModelProvider: 'chronos',
+        },
+      )
+    })
+    const weakGate = buildExternalModelBacktestGate(weakSnapshots, weakSnapshots[weakSnapshots.length - 2], 1)
+
+    assert.equal(weakGate.status, 'weak')
+    assert.equal(weakGate.weightMultiplier, 0)
+  })
+
+  it('keeps parallel provider candidates in external model provider buckets', () => {
+    const snapshots = [
+      makeSnapshot('2026-05-16T09:00:00.000Z', 100, 64, 'watch', 'double_bottom', 'supportive', {
+        externalModelCandidates: [
+          makeExternalCandidate('chronos', 0.66, 76),
+          makeExternalCandidate('timesfm', 0.58, 70),
+        ],
+        modelProbability: 0.62,
+      }),
+      makeSnapshot('2026-05-16T09:01:00.000Z', 102, 38, 'none'),
+      makeSnapshot('2026-05-16T09:02:00.000Z', 101, 64, 'watch', 'double_bottom', 'supportive', {
+        externalModelCandidates: [
+          makeExternalCandidate('chronos', 0.67, 77),
+          makeExternalCandidate('timesfm', 0.59, 71),
+        ],
+        modelProbability: 0.62,
+      }),
+      makeSnapshot('2026-05-16T09:03:00.000Z', 103, 38, 'none'),
+    ]
+
+    const monitor = buildBacktestMonitor(snapshots, 1)
+    const chronosBucket = monitor.externalModel.buckets.find((bucket) => bucket.key === 'provider:chronos')
+    const timesfmBucket = monitor.externalModel.buckets.find((bucket) => bucket.key === 'provider:timesfm')
+
+    assert.equal(chronosBucket?.qualifiedSamples, 2)
+    assert.equal(timesfmBucket?.qualifiedSamples, 2)
+  })
 })
+
+function makeExternalCandidate(
+  provider: 'chronos' | 'timesfm' | 'moirai',
+  upProbability: number,
+  confidence: number,
+) {
+  return {
+    id: `${provider}-advisor`,
+    name: `${provider} 军师`,
+    provider,
+    modelName: `${provider}-test-model`,
+    status: 'live' as const,
+    horizonMinutes: 1,
+    upProbability,
+    downProbability: 1 - upProbability,
+    confidence,
+    expectedReturnPercent: null,
+    forecastPrice: null,
+    intervalLow: null,
+    intervalHigh: null,
+    generatedAt: '2026-05-16T09:00:00.000Z',
+    summary: 'test',
+    rationale: [],
+    risks: [],
+  }
+}
 
 function makeSnapshot(
   quoteTimestamp: string,
@@ -57,6 +190,7 @@ function makeSnapshot(
   signalLevel: OpportunityLevel,
   primaryPatternKind: BacktestSnapshot['primaryPatternKind'] = null,
   macroRegime: BacktestSnapshot['macroRegime'] = 'neutral',
+  overrides: Partial<BacktestSnapshot> = {},
 ): BacktestSnapshot {
   return {
     updatedAt: quoteTimestamp,
@@ -89,5 +223,16 @@ function makeSnapshot(
     macroRegime,
     confluenceScore: 55,
     confluenceConflictLevel: 'none',
+    externalModelStatus: overrides.externalModelUpProbability === undefined ? 'unconfigured' : 'live',
+    externalModelProvider: 'chronos',
+    externalModelName: 'test-chronos',
+    externalModelHorizonMinutes: 1,
+    externalModelConfidence: 0,
+    externalModelExpectedReturnPercent: null,
+    eventRiskLevel: 'none',
+    psychologyLevel: 'stable',
+    sourceHealth: 'healthy',
+    modelProbability: 0.5,
+    ...overrides,
   }
 }

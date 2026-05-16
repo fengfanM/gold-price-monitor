@@ -16,6 +16,20 @@ services:
         value: /var/data/gold-monitor/gold-monitor.sqlite
       - key: MARKET_PROVIDER_TIMEOUT_MS
         value: "2500"
+      - key: EXTERNAL_TS_MODEL_URL
+        value: https://gold-chronos-bolt.onrender.com/forecast
+      - key: EXTERNAL_TS_MODEL_TOKEN
+        sync: false
+      - key: EXTERNAL_TS_MODEL_PROVIDER
+        value: chronos
+      - key: EXTERNAL_TS_MODEL_NAME
+        value: amazon/chronos-bolt-base
+      - key: EXTERNAL_TS_MODEL_TIMEOUT_MS
+        value: "8000"
+      - key: EXTERNAL_TS_MODEL_HORIZON_MINUTES
+        value: "60"
+      - key: EXTERNAL_TS_MODEL_CONTEXT_POINTS
+        value: "256"
     disk:
       name: gold-monitor-data
       mountPath: /var/data
@@ -38,3 +52,22 @@ services:
         sync: false
       - key: POSTGRES_HTTP_TOKEN
         sync: false
+
+  - type: web
+    name: gold-chronos-bolt
+    runtime: docker
+    plan: starter
+    rootDir: services/chronos-bolt
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: CHRONOS_SERVICE_TOKEN
+        sync: false
+      - key: CHRONOS_MODEL_ID
+        value: amazon/chronos-bolt-base
+      - key: CHRONOS_DEVICE
+        value: cpu
+      - key: CHRONOS_TORCH_DTYPE
+        value: float32
+      - key: CHRONOS_ENABLE_FALLBACK
+        value: "1"

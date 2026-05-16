@@ -208,6 +208,28 @@ export type ExpertConsensus = {
   cautiousCount: number
 }
 
+export type ExternalModelAdvisor = {
+  id: string
+  name: string
+  provider: 'chronos' | 'timesfm' | 'moirai' | 'lag-llama' | 'custom' | 'disabled'
+  modelName: string
+  status: 'live' | 'unconfigured' | 'error'
+  horizonMinutes: number
+  upProbability: number | null
+  downProbability: number | null
+  confidence: number
+  expectedReturnPercent: number | null
+  forecastPrice: number | null
+  intervalLow: number | null
+  intervalHigh: number | null
+  generatedAt: string
+  summary: string
+  rationale: string[]
+  risks: string[]
+  backtestGate?: ExternalModelBacktestGate | null
+  competitors?: ExternalModelAdvisor[]
+}
+
 export type MarketFactorImpact = 'supportive' | 'neutral' | 'pressure' | 'unknown'
 
 export type MarketFactorStatus = 'live' | 'derived' | 'unavailable'
@@ -270,6 +292,7 @@ export type BacktestSnapshot = {
   updatedAt: string
   quoteTimestamp: string
   price: number
+  sampleOrigin?: 'live' | 'historical' | 'synthetic'
   signalScore: number
   signalLevel: OpportunityLevel
   backtest: BacktestFactor
@@ -280,6 +303,17 @@ export type BacktestSnapshot = {
   macroRegime?: 'supportive' | 'neutral' | 'pressure' | 'unknown'
   modelProbability?: number | null
   modelConfidence?: number | null
+  externalModelStatus?: ExternalModelAdvisor['status'] | null
+  externalModelProvider?: ExternalModelAdvisor['provider'] | null
+  externalModelName?: string | null
+  externalModelHorizonMinutes?: number | null
+  externalModelUpProbability?: number | null
+  externalModelConfidence?: number | null
+  externalModelExpectedReturnPercent?: number | null
+  externalModelCandidates?: ExternalModelAdvisor[]
+  eventRiskLevel?: EconomicEventRisk['level'] | null
+  psychologyLevel?: PsychologyDiscipline['level'] | null
+  sourceHealth?: 'healthy' | 'stale' | 'down' | 'unknown'
 }
 
 export type WalkForwardSample = {
@@ -312,6 +346,65 @@ export type BacktestBucket = {
   summary: string
 }
 
+export type ExternalModelBucketDimension =
+  | 'model_probability'
+  | 'model_confidence'
+  | 'model_vs_local'
+  | 'session'
+  | 'pattern'
+  | 'event'
+  | 'confluence'
+  | 'macro'
+  | 'valuation'
+  | 'source_health'
+  | 'horizon'
+  | 'provider'
+
+export type ExternalModelBacktestBucket = {
+  key: string
+  label: string
+  dimension: ExternalModelBucketDimension
+  horizonMinutes: number
+  sampleSize: number
+  qualifiedSamples: number
+  winRate: number | null
+  baselineWinRate: number | null
+  excessWinRate: number | null
+  averageReturn: number | null
+  medianReturn: number | null
+  expectancy: number | null
+  profitFactor: number | null
+  maxDrawdown: number | null
+  mae: number | null
+  mfe: number | null
+  mfeMaeRatio: number | null
+  brierScore: number | null
+  calibrationError: number | null
+  reliability: number
+  summary: string
+}
+
+export type ExternalModelBacktestMonitor = {
+  modelVersion: string
+  updatedAt: string
+  sampleSize: number
+  evaluatedSamples: number
+  liveCoverage: number | null
+  buckets: ExternalModelBacktestBucket[]
+  bestBuckets: ExternalModelBacktestBucket[]
+  weakBuckets: ExternalModelBacktestBucket[]
+  summary: string
+}
+
+export type ExternalModelBacktestGate = {
+  status: 'strong' | 'neutral' | 'weak' | 'insufficient'
+  weightMultiplier: number
+  matchedBucketKeys: string[]
+  matchedStrongBuckets: string[]
+  matchedWeakBuckets: string[]
+  summary: string
+}
+
 export type BacktestMonitor = {
   updatedAt: string
   sampleSize: number
@@ -329,6 +422,7 @@ export type BacktestMonitor = {
   maxDrawdown: number | null
   buckets: BacktestBucket[]
   probabilityModel: BacktestProbabilityMonitor
+  externalModel: ExternalModelBacktestMonitor
   failureSamples: WalkForwardSample[]
   summary: string
 }
@@ -534,6 +628,7 @@ export type OpportunitySignal = {
   risks: string[]
   expertOpinions: ExpertOpinion[]
   expertConsensus: ExpertConsensus
+  externalModelAdvisor: ExternalModelAdvisor | null
   marketContext: MarketContext
   valuation: ValuationMetrics
   patternSignals: PatternSignal[]

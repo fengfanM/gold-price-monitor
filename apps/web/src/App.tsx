@@ -131,6 +131,7 @@ type BacktestMonitor = {
   informationRatio: number | null
   maxDrawdown: number | null
   buckets?: BacktestBucket[]
+  externalModel?: ExternalModelBacktestMonitor
   failureSamples: WalkForwardSample[]
   summary: string
 }
@@ -148,6 +149,54 @@ type BacktestBucket = {
   maxDrawdown: number | null
   mae: number | null
   mfe: number | null
+  reliability: number
+  summary: string
+}
+
+type ExternalModelBacktestMonitor = {
+  modelVersion: string
+  updatedAt: string
+  sampleSize: number
+  evaluatedSamples: number
+  liveCoverage: number | null
+  buckets: ExternalModelBacktestBucket[]
+  bestBuckets: ExternalModelBacktestBucket[]
+  weakBuckets: ExternalModelBacktestBucket[]
+  summary: string
+}
+
+type ExternalModelBacktestBucket = {
+  key: string
+  label: string
+  dimension:
+    | 'model_probability'
+    | 'model_confidence'
+    | 'model_vs_local'
+    | 'session'
+    | 'pattern'
+    | 'event'
+    | 'confluence'
+    | 'macro'
+    | 'valuation'
+    | 'source_health'
+    | 'horizon'
+    | 'provider'
+  horizonMinutes: number
+  sampleSize: number
+  qualifiedSamples: number
+  winRate: number | null
+  baselineWinRate: number | null
+  excessWinRate: number | null
+  averageReturn: number | null
+  medianReturn: number | null
+  expectancy: number | null
+  profitFactor: number | null
+  maxDrawdown: number | null
+  mae: number | null
+  mfe: number | null
+  mfeMaeRatio: number | null
+  brierScore: number | null
+  calibrationError: number | null
   reliability: number
   summary: string
 }
@@ -228,6 +277,7 @@ type OpportunityPayload = {
   confluence?: MultiTimeframeConfluence | null
   eventRisk?: EconomicEventRisk | null
   psychology?: PsychologyDiscipline | null
+  externalModelAdvisor?: ExternalModelAdvisor | null
 }
 
 type OpportunityInfo = {
@@ -246,6 +296,31 @@ type OpportunityInfo = {
   confluence: MultiTimeframeConfluence | null
   eventRisk: EconomicEventRisk | null
   psychology: PsychologyDiscipline | null
+  externalModelAdvisor: ExternalModelAdvisor | null
+}
+
+type ExternalModelAdvisor = {
+  provider: 'chronos' | 'timesfm' | 'moirai' | 'lag-llama' | 'custom' | 'disabled'
+  modelName: string
+  status: 'live' | 'unconfigured' | 'error'
+  horizonMinutes: number
+  upProbability: number | null
+  downProbability: number | null
+  confidence: number
+  expectedReturnPercent: number | null
+  forecastPrice: number | null
+  intervalLow: number | null
+  intervalHigh: number | null
+  generatedAt: string
+  summary: string
+  rationale: string[]
+  risks: string[]
+  backtestGate?: {
+    status: 'insufficient' | 'weak' | 'neutral' | 'strong'
+    summary: string
+    weightMultiplier: number
+  } | null
+  competitors?: ExternalModelAdvisor[]
 }
 
 type EconomicEvent = {
@@ -1113,6 +1188,7 @@ function App() {
 
           {viewMode === 'intraday' ? (
             <IntradayChartPanel
+              indicators={activeIndicators}
               isLoading={isLoading}
               latestPrice={quote?.price ?? null}
               latestReference={quote?.marketReference.calibration.anchorPrice ?? null}
@@ -1136,6 +1212,12 @@ function App() {
               timeframeLabel={activeTimeframe.label}
             />
           )}
+          <ChartInsightDeck
+            monitor={backtestMonitor}
+            providerHealth={providerHealth}
+            signal={buySignal}
+            transparency={signalTransparency}
+          />
         </section>
 
         <aside className="side-rail">
@@ -1665,6 +1747,7 @@ function BacktestMonitorPanel(props: { monitor: BacktestMonitor | null }) {
         <MetricCard label="失败样本" value={`${monitor.failureSamples.length}`} />
       </div>
       <BucketBacktestPanel buckets={monitor.buckets ?? []} compact />
+      <ExternalModelBacktestPanel monitor={monitor.externalModel ?? null} compact />
       {monitor.failureSamples.length > 0 ? (
         <div className="failure-samples">
           {monitor.failureSamples.slice(0, 3).map((sample) => (
@@ -1677,6 +1760,60 @@ function BacktestMonitorPanel(props: { monitor: BacktestMonitor | null }) {
         </div>
       ) : null}
     </section>
+  )
+}
+
+function ExternalModelBacktestPanel(props: {
+  compact?: boolean
+  monitor: ExternalModelBacktestMonitor | null
+}) {
+  const monitor = props.monitor
+  if (!monitor) {
+    return null
+  }
+  const displayBuckets = [
+    ...monitor.bestBuckets,
+    ...monitor.buckets.filter((bucket) => {
+      return bucket.dimension === 'model_probability' ||
+        bucket.dimension === 'model_vs_local' ||
+        bucket.dimension === 'event'
+    }),
+  ].filter((bucket, index, array) => {
+    return array.findIndex((item) => item.key === bucket.key) === index
+  }).slice(0, props.compact ? 3 : 8)
+
+  return (
+    <div className={props.compact ? 'external-model-backtest external-model-backtest--compact' : 'external-model-backtest'}>
+      <header>
+        <strong>外部模型分桶回测</strong>
+        <span>live覆盖 {formatNullablePercent(monitor.liveCoverage)}</span>
+      </header>
+      <p>{monitor.summary}</p>
+      <div className="bucket-backtest-grid">
+        {displayBuckets.map((bucket) => (
+          <article className={`bucket-card bucket-card--${bucket.reliability >= 55 ? 'good' : bucket.reliability < 45 ? 'weak' : 'watch'}`} key={bucket.key}>
+            <div>
+              <strong>{bucket.label}</strong>
+              <span>{bucket.qualifiedSamples}/{bucket.sampleSize} 合格</span>
+            </div>
+            <div className="bucket-card__metrics">
+              <small>胜率 {formatNullablePercent(bucket.winRate)}</small>
+              <small>超额 {formatNullablePercent(bucket.excessWinRate)}</small>
+              <small>PF {formatNullableRatio(bucket.profitFactor)}</small>
+              <small>Brier {formatNullableRatio(bucket.brierScore)}</small>
+              <small>MAE {formatNullablePercent(bucket.mae)}</small>
+              <small>可信 {bucket.reliability}/100</small>
+            </div>
+            {!props.compact ? <p>{bucket.summary}</p> : null}
+          </article>
+        ))}
+      </div>
+      {monitor.weakBuckets.length > 0 ? (
+        <p className="external-model-backtest__warning">
+          弱桶提示：{monitor.weakBuckets.slice(0, 2).map((bucket) => bucket.label).join('、')} 历史表现不足，命中时模型自动降权。
+        </p>
+      ) : null}
+    </div>
   )
 }
 
@@ -1805,6 +1942,14 @@ function BacktestResearchPage(props: {
           <span>按信号/分数/估值/时段/形态/宏观拆解</span>
         </header>
         <BucketBacktestPanel buckets={monitor?.buckets ?? []} />
+      </section>
+
+      <section className="equity-curve-card">
+        <header>
+          <strong>外部模型分桶回测</strong>
+          <span>按模型概率/共振/事件/时段拆解</span>
+        </header>
+        <ExternalModelBacktestPanel monitor={monitor?.externalModel ?? null} />
       </section>
 
       <section className="backtest-grid">
@@ -2809,6 +2954,7 @@ function getQualityTone(level: DataQualityInfo['level'] | undefined) {
 }
 
 function IntradayChartPanel(props: {
+  indicators: Indicator[]
   priceData: LineDatum[]
   referenceData: LineDatum[]
   latestPrice: number | null
@@ -2822,6 +2968,16 @@ function IntradayChartPanel(props: {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [hover, setHover] = useState<IntradayHover | null>(null)
   const extremes = useMemo(() => buildLineExtremes(props.priceData), [props.priceData])
+  const syntheticCandles = useMemo(() => lineDataToSyntheticCandles(props.priceData), [props.priceData])
+  const ma5Data = useMemo(() => buildMovingAverageData(syntheticCandles, 5), [syntheticCandles])
+  const ma20Data = useMemo(() => buildMovingAverageData(syntheticCandles, 20), [syntheticCandles])
+  const bollData = useMemo(() => buildBollingerBands(syntheticCandles, 20, 2), [syntheticCandles])
+  const rsiValue = useMemo(() => buildRsiValue(syntheticCandles, 14), [syntheticCandles])
+  const macdValue = useMemo(() => buildMacdValue(syntheticCandles), [syntheticCandles])
+  const showMa = props.indicators.includes('ma')
+  const showBoll = props.indicators.includes('boll')
+  const showRsi = props.indicators.includes('rsi')
+  const showMacd = props.indicators.includes('macd')
   const forecast = useMemo(
     () => buildChartForecast(props.latestPrice, extremes, props.prediction, props.patternSignals, props.opportunity),
     [extremes, props.latestPrice, props.opportunity, props.patternSignals, props.prediction],
@@ -2862,6 +3018,45 @@ function IntradayChartPanel(props: {
     if (props.referenceData.length > 1) {
       referenceSeries.setData(props.referenceData)
     }
+    const ma5Series = showMa ? chart.addSeries(LineSeries, {
+      color: '#f59e0b',
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    }) : null
+    const ma20Series = showMa ? chart.addSeries(LineSeries, {
+      color: '#7c3aed',
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    }) : null
+    ma5Series?.setData(ma5Data)
+    ma20Series?.setData(ma20Data)
+
+    const bollUpperSeries = showBoll ? chart.addSeries(LineSeries, {
+      color: '#64748b',
+      lineWidth: 1,
+      lineStyle: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    }) : null
+    const bollMiddleSeries = showBoll ? chart.addSeries(LineSeries, {
+      color: '#94a3b8',
+      lineWidth: 1,
+      lineStyle: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    }) : null
+    const bollLowerSeries = showBoll ? chart.addSeries(LineSeries, {
+      color: '#64748b',
+      lineWidth: 1,
+      lineStyle: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    }) : null
+    bollUpperSeries?.setData(bollData.upper)
+    bollMiddleSeries?.setData(bollData.middle)
+    bollLowerSeries?.setData(bollData.lower)
 
     chart.timeScale().fitContent()
     chart.subscribeCrosshairMove((param: MouseEventParams<Time>) => {
@@ -2888,10 +3083,12 @@ function IntradayChartPanel(props: {
         return
       }
 
-      chart.applyOptions({
-        width: entry.contentRect.width,
-        height: entry.contentRect.height,
-      })
+      const nextSize = getChartSize(container, entry.contentRect)
+      if (!nextSize) {
+        return
+      }
+
+      chart.applyOptions(nextSize)
     })
 
     observer.observe(container)
@@ -2909,6 +3106,11 @@ function IntradayChartPanel(props: {
     props.latestPrice,
     props.latestReference,
     props.patternSignals,
+    showBoll,
+    showMa,
+    ma5Data,
+    ma20Data,
+    bollData,
   ])
 
   return (
@@ -2951,6 +3153,12 @@ function IntradayChartPanel(props: {
       ) : (
         <div className="lw-chart" ref={containerRef} />
       )}
+      <IndicatorPanel
+        boll={bollData}
+        macdValue={showMacd ? macdValue : null}
+        rsiValue={showRsi ? rsiValue : null}
+        showBoll={showBoll}
+      />
       <PatternSignalPanel patterns={props.patternSignals} />
     </div>
   )
@@ -3108,10 +3316,12 @@ function CandlestickChartPanel(props: {
         return
       }
 
-      chart.applyOptions({
-        width: entry.contentRect.width,
-        height: entry.contentRect.height,
-      })
+      const nextSize = getChartSize(container, entry.contentRect)
+      if (!nextSize) {
+        return
+      }
+
+      chart.applyOptions(nextSize)
     })
 
     observer.observe(container)
@@ -3307,6 +3517,75 @@ function PatternSignalPanel(props: { patterns: PatternSignal[] }) {
       ))}
     </div>
   )
+}
+
+function ChartInsightDeck(props: {
+  monitor: BacktestMonitor | null
+  providerHealth: ProviderHealthPayload | null
+  signal: OpportunityInfo | null
+  transparency: SignalTransparency
+}) {
+  const external = props.signal?.externalModelAdvisor ?? null
+  const liveProviders = props.providerHealth?.providers.filter((provider) => provider.status === 'live').length ?? null
+  const totalProviders = props.providerHealth?.providers.length ?? null
+  const externalMonitor = props.monitor?.externalModel ?? null
+  const bestBucket = externalMonitor?.bestBuckets[0] ?? null
+  const weakBucket = externalMonitor?.weakBuckets[0] ?? null
+  const action = props.signal?.tradePlan?.actionLabel ?? props.transparency.verdict
+
+  return (
+    <section className="chart-insight-deck" aria-label="可视化军师摘要">
+      <article className="chart-insight-card chart-insight-card--decision">
+        <span>小白操作翻译</span>
+        <strong>{action}</strong>
+        <small>{props.signal?.tradePlan?.positionSuggestion ?? '先看多源价差、回测样本和事件风险，未过硬门槛不追价。'}</small>
+      </article>
+      <article className="chart-insight-card">
+        <span>外部模型军师</span>
+        <strong>
+          {external
+            ? `${externalModelProviderLabel(external.provider)} ${external.upProbability === null ? '--' : formatProbability(external.upProbability * 100)}`
+            : '未配置'}
+        </strong>
+        <small>{external?.backtestGate?.summary ?? external?.summary ?? externalMonitor?.summary ?? 'Chronos/TimesFM/Moirai 只在通过分桶回测后才允许加权。'}</small>
+      </article>
+      <article className="chart-insight-card">
+        <span>同类胜率/回测</span>
+        <strong>{props.monitor?.winRate === null || props.monitor?.winRate === undefined ? '--' : formatNullablePercent(props.monitor.winRate)}</strong>
+        <small>
+          {bestBucket
+            ? `强桶：${bestBucket.label}，PF ${formatNullableRatio(bestBucket.profitFactor)}。`
+            : weakBucket
+              ? `弱桶：${weakBucket.label}，模型自动降权。`
+              : '等待更多 live 样本形成同类场景胜率。'}
+        </small>
+      </article>
+      <article className="chart-insight-card">
+        <span>数据源覆盖</span>
+        <strong>{liveProviders === null || totalProviders === null ? '--' : `${liveProviders}/${totalProviders}`}</strong>
+        <small>{props.signal?.marketContext?.summary ?? '工作日交易时段要求工银、AU9999、银行参考和宏观源尽量一致。'}</small>
+      </article>
+    </section>
+  )
+}
+
+function externalModelProviderLabel(provider: ExternalModelAdvisor['provider']) {
+  if (provider === 'chronos') {
+    return 'Chronos'
+  }
+  if (provider === 'timesfm') {
+    return 'TimesFM'
+  }
+  if (provider === 'moirai') {
+    return 'Moirai'
+  }
+  if (provider === 'lag-llama') {
+    return 'Lag-Llama'
+  }
+  if (provider === 'disabled') {
+    return '未配置'
+  }
+  return '自定义'
 }
 
 function buildScoreMethodology(signal: OpportunityInfo | null, monitor: BacktestMonitor | null) {
@@ -3851,8 +4130,9 @@ function addForecastPriceLines(
   const lines = [
     { price: forecast.failurePrice, color: '#dc2626', title: '失效', style: LineStyle.LargeDashed, priority: 1 },
     { price: forecast.support, color: '#078466', title: '支撑', style: LineStyle.SparseDotted, priority: 2 },
-    { price: forecast.intervalHigh, color: '#1f5eff', title: '上沿', style: LineStyle.Dotted, priority: 3 },
-    { price: forecast.intervalLow, color: '#1f5eff', title: '下沿', style: LineStyle.Dotted, priority: 4 },
+    { price: forecast.resistance, color: '#d97706', title: '压力', style: LineStyle.SparseDotted, priority: 3 },
+    { price: forecast.intervalHigh, color: '#1f5eff', title: '上沿', style: LineStyle.Dotted, priority: 4 },
+    { price: forecast.intervalLow, color: '#1f5eff', title: '下沿', style: LineStyle.Dotted, priority: 5 },
   ].filter((line): line is {
     price: number
     color: string
@@ -4074,6 +4354,16 @@ function mapServerCandles(candles: CandlePayload[] | undefined) {
     .filter((item): item is CandleDatum => item !== null)
 }
 
+function lineDataToSyntheticCandles(data: LineDatum[]) {
+  return data.map((point) => ({
+    time: point.time,
+    open: point.value,
+    high: point.value,
+    low: point.value,
+    close: point.value,
+  }))
+}
+
 function buildMovingAverageData(candles: CandleDatum[], period: number) {
   if (candles.length < period) {
     return []
@@ -4207,9 +4497,14 @@ function toUtcTimestamp(value: string) {
 }
 
 function chartOptions(container: HTMLElement) {
+  const size = getChartSize(container) ?? {
+    width: Math.max(320, container.clientWidth),
+    height: 320,
+  }
+
   return {
-    width: container.clientWidth,
-    height: container.clientHeight,
+    width: size.width,
+    height: size.height,
     autoSize: false,
     attributionLogo: false,
     layout: {
@@ -4253,6 +4548,16 @@ function chartOptions(container: HTMLElement) {
       priceFormatter: (value: number) => currencyFormatter.format(value),
     },
   } as const
+}
+
+function getChartSize(container: HTMLElement, rect?: DOMRectReadOnly) {
+  const width = Math.floor(rect?.width ?? container.clientWidth)
+  const height = Math.floor(rect?.height ?? container.clientHeight)
+  if (width < 1 || height < 1) {
+    return null
+  }
+
+  return { width, height }
 }
 
 function formatDateTime(value: string) {
@@ -4357,6 +4662,7 @@ function normalizeOpportunity(quote: QuotePayload | null): OpportunityInfo | nul
     confluence: normalizeConfluence(raw.confluence),
     eventRisk: normalizeEventRisk(raw.eventRisk),
     psychology: normalizePsychology(raw.psychology),
+    externalModelAdvisor: raw.externalModelAdvisor ?? null,
   }
 }
 

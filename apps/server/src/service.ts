@@ -20,8 +20,9 @@ import {
 } from './market-providers.js'
 import { buildDataQuality, detectQuoteAnomalies } from './quality.js'
 import { fetchSgeReferenceQuotes } from './sge.js'
-import { buildBacktestMonitor } from './backtest.js'
+import { buildBacktestMonitor, buildExternalModelBacktestGate } from './backtest.js'
 import { detectPatternSignals } from './patterns.js'
+import { fetchExternalModelAdvisor } from './external-model-advisor.js'
 import {
   loadHistory,
   loadMarketContext,
@@ -56,6 +57,7 @@ export class QuoteService {
   private lastAnomalies: DataAnomaly[] = []
   private latestMarketContext: MarketContext | null = null
   private latestMarketContextBuiltAt = 0
+  private latestExternalModelAdvisor: Awaited<ReturnType<typeof fetchExternalModelAdvisor>> | null = null
 
   async init() {
     const [history, marketContext] = await Promise.all([
@@ -118,6 +120,7 @@ export class QuoteService {
       sourceStatus,
       marketContext,
       patternSignals,
+      this.latestExternalModelAdvisor,
     )
 
     return {
@@ -272,13 +275,64 @@ export class QuoteService {
     this.latestMarketContext = await this.buildMarketContextIfNeeded(quote)
     const stats = buildStats(this.history, quote)
     const patternSignals = detectPatternSignals(this.history, quote)
-    const opportunity = buildOpportunitySignal(
+    const localOpportunity = buildOpportunitySignal(
       this.history,
       quote,
       stats,
       this.getSourceStatus(),
       this.latestMarketContext,
       patternSignals,
+    )
+    this.latestExternalModelAdvisor = await fetchExternalModelAdvisor({
+      history: this.history,
+      latestQuote: quote,
+      probabilityModel: localOpportunity.probabilityModel,
+      stats,
+    })
+    const priorBacktestSnapshots = await loadBacktestSnapshots()
+    const sourceStatus = this.getSourceStatus()
+    const provisionalSnapshot = {
+      updatedAt: new Date().toISOString(),
+      quoteTimestamp: quote.fetchedAt,
+      price: quote.price,
+      sampleOrigin: 'live' as const,
+      signalScore: localOpportunity.score,
+      signalLevel: localOpportunity.level,
+      backtest: this.latestMarketContext.backtest,
+      valuation: localOpportunity.valuation,
+      primaryPatternKind: patternSignals[0]?.kind ?? null,
+      confluenceScore: localOpportunity.confluence.score,
+      confluenceConflictLevel: localOpportunity.confluence.conflictLevel,
+      macroRegime: marketRegimeFromScore(this.latestMarketContext.factorScore),
+      modelProbability: localOpportunity.probabilityModel.primaryPrediction.probability,
+      modelConfidence: localOpportunity.probabilityModel.primaryPrediction.confidence,
+      externalModelStatus: this.latestExternalModelAdvisor.status,
+      externalModelProvider: this.latestExternalModelAdvisor.provider,
+      externalModelName: this.latestExternalModelAdvisor.modelName,
+      externalModelHorizonMinutes: this.latestExternalModelAdvisor.horizonMinutes,
+      externalModelUpProbability: this.latestExternalModelAdvisor.upProbability,
+      externalModelConfidence: this.latestExternalModelAdvisor.confidence,
+      externalModelExpectedReturnPercent: this.latestExternalModelAdvisor.expectedReturnPercent,
+      externalModelCandidates: [
+        this.latestExternalModelAdvisor,
+        ...(this.latestExternalModelAdvisor.competitors ?? []),
+      ],
+      eventRiskLevel: localOpportunity.eventRisk.level,
+      psychologyLevel: localOpportunity.psychology.level,
+      sourceHealth: sourceHealthFromStatus(sourceStatus),
+    }
+    this.latestExternalModelAdvisor = {
+      ...this.latestExternalModelAdvisor,
+      backtestGate: buildExternalModelBacktestGate(priorBacktestSnapshots, provisionalSnapshot),
+    }
+    const opportunity = buildOpportunitySignal(
+      this.history,
+      quote,
+      stats,
+      sourceStatus,
+      this.latestMarketContext,
+      patternSignals,
+      this.latestExternalModelAdvisor,
     )
     await Promise.all([
       saveHistory(this.history),
@@ -293,6 +347,7 @@ export class QuoteService {
         updatedAt: new Date().toISOString(),
         quoteTimestamp: quote.fetchedAt,
         price: quote.price,
+        sampleOrigin: 'live',
         signalScore: opportunity.score,
         signalLevel: opportunity.level,
         backtest: this.latestMarketContext.backtest,
@@ -303,6 +358,22 @@ export class QuoteService {
         macroRegime: marketRegimeFromScore(this.latestMarketContext.factorScore),
         modelProbability: opportunity.probabilityModel.primaryPrediction.probability,
         modelConfidence: opportunity.probabilityModel.primaryPrediction.confidence,
+        externalModelStatus: opportunity.externalModelAdvisor?.status ?? null,
+        externalModelProvider: opportunity.externalModelAdvisor?.provider ?? null,
+        externalModelName: opportunity.externalModelAdvisor?.modelName ?? null,
+        externalModelHorizonMinutes: opportunity.externalModelAdvisor?.horizonMinutes ?? null,
+        externalModelUpProbability: opportunity.externalModelAdvisor?.upProbability ?? null,
+        externalModelConfidence: opportunity.externalModelAdvisor?.confidence ?? null,
+        externalModelExpectedReturnPercent: opportunity.externalModelAdvisor?.expectedReturnPercent ?? null,
+        externalModelCandidates: opportunity.externalModelAdvisor
+          ? [
+              opportunity.externalModelAdvisor,
+              ...(opportunity.externalModelAdvisor.competitors ?? []),
+            ]
+          : [],
+        eventRiskLevel: opportunity.eventRisk.level,
+        psychologyLevel: opportunity.psychology.level,
+        sourceHealth: sourceHealthFromStatus(this.getSourceStatus()),
       }),
     ])
   }
@@ -580,6 +651,21 @@ function marketRegimeFromScore(score: number) {
     return 'pressure' as const
   }
   return 'neutral' as const
+}
+
+function sourceHealthFromStatus(sourceStatus: SourceStatus) {
+  const active = sourceStatus.active === 'official'
+    ? sourceStatus.official
+    : sourceStatus.active === 'fallback'
+      ? sourceStatus.fallback
+      : null
+  if (!active) {
+    return 'unknown' as const
+  }
+  if (sourceStatus.stale) {
+    return 'stale' as const
+  }
+  return active.status === 'healthy' ? 'healthy' as const : 'down' as const
 }
 
 function normalizeReferencePrice(value: number | null) {

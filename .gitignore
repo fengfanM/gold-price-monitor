@@ -5,6 +5,9 @@ apps/web/src/assets
 .DS_Store
 apps/server/data
 .vercel
+services/chronos-bolt/.venv
+services/chronos-bolt/__pycache__
+reports
 vendor
 desktop-ops-agent
 xhs-content-automation

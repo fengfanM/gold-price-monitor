@@ -9,6 +9,7 @@ import type {
   ExpertAction,
   ExpertConsensus,
   ExpertOpinion,
+  ExternalModelAdvisor,
   HistoryPoint,
   MarketContext,
   MultiTimeframeConfluence,
@@ -33,6 +34,7 @@ export function buildOpportunitySignal(
   sourceStatus: SourceStatus,
   marketContext?: MarketContext,
   patternSignals: PatternSignal[] = [],
+  externalModelAdvisor: ExternalModelAdvisor | null = null,
 ): OpportunitySignal {
   const technicals = buildTechnicalSnapshot(history, latestQuote)
   return evaluateOpportunity({
@@ -43,6 +45,7 @@ export function buildOpportunitySignal(
     technicals,
     marketContext: marketContext ?? buildNeutralMarketContext(),
     patternSignals,
+    externalModelAdvisor,
   })
 }
 
@@ -54,6 +57,7 @@ export function evaluateOpportunity(input: {
   technicals: TechnicalSnapshot
   marketContext?: MarketContext
   patternSignals?: PatternSignal[]
+  externalModelAdvisor?: ExternalModelAdvisor | null
 }): OpportunitySignal {
   const {
     history,
@@ -63,6 +67,7 @@ export function evaluateOpportunity(input: {
     sourceStatus,
     technicals,
     patternSignals = [],
+    externalModelAdvisor = null,
   } = input
   const reasons: string[] = []
   const risks: string[] = []
@@ -235,6 +240,7 @@ export function evaluateOpportunity(input: {
     ruleCappedScore,
     scoreCap,
     probabilityModel.primaryPrediction,
+    externalModelAdvisor,
     reasons,
     risks,
   )
@@ -280,6 +286,7 @@ export function evaluateOpportunity(input: {
   const finalScore = Math.round(clamp(Math.min(prePlanScore, planScoreCap, psychologyScoreCap), 0, 100))
   const level = finalScore >= 72 && tradePlan.confidence !== 'low' ? 'strong' : finalScore >= 45 ? 'watch' : 'none'
   const expertOpinions = buildExpertOpinions({
+    externalModelAdvisor,
     finalScore,
     history,
     latestQuote,
@@ -302,6 +309,7 @@ export function evaluateOpportunity(input: {
     risks,
     expertOpinions,
     expertConsensus,
+    externalModelAdvisor,
     marketContext,
     valuation,
     patternSignals,
@@ -644,6 +652,7 @@ function calculateMaxDrawdown(prices: number[]) {
 }
 
 function buildExpertOpinions(input: {
+  externalModelAdvisor: ExternalModelAdvisor | null
   finalScore: number
   history: HistoryPoint[]
   latestQuote: QuoteSample
@@ -655,6 +664,7 @@ function buildExpertOpinions(input: {
   technicals: TechnicalSnapshot
 }): ExpertOpinion[] {
   const {
+    externalModelAdvisor,
     finalScore,
     history,
     latestQuote,
@@ -680,7 +690,7 @@ function buildExpertOpinions(input: {
   const macroHighlights = summarizeMacroHighlights(marketContext)
   const criticalProviderFailures = getCriticalProviderFailures(marketContext)
 
-  return [
+  const opinions: ExpertOpinion[] = [
     {
       id: 'quant-timer',
       name: '量化择时官',
@@ -774,6 +784,8 @@ function buildExpertOpinions(input: {
       methodTags: ['风控', '数据质量', '仓位纪律', '降级策略'],
     },
   ]
+  const externalOpinion = buildExternalModelOpinion(externalModelAdvisor)
+  return externalOpinion ? [...opinions, externalOpinion] : opinions
 }
 
 function buildExpertConsensus(opinions: ExpertOpinion[]): ExpertConsensus {
@@ -843,6 +855,7 @@ function applyProbabilityModelAdjustment(
   ruleCappedScore: number,
   scoreCap: number,
   prediction: ProbabilityPrediction,
+  externalModelAdvisor: ExternalModelAdvisor | null,
   reasons: string[],
   risks: string[],
 ) {
@@ -854,7 +867,8 @@ function applyProbabilityModelAdjustment(
   const adjusted = blendedScore > ruleCappedScore
     ? Math.min(blendedScore, ruleCappedScore + maxBoost)
     : blendedScore
-  const finalScore = Math.round(clamp(Math.min(adjusted, scoreCap), 0, 100))
+  const externallyAdjusted = applyExternalModelAdjustment(adjusted, externalModelAdvisor, reasons, risks)
+  const finalScore = Math.round(clamp(Math.min(externallyAdjusted, scoreCap), 0, 100))
 
   if (prediction.probability >= 0.58) {
     reasons.push(`概率模型：${prediction.summary} 仅作为规则评分的低权重加权项。`)
@@ -868,6 +882,73 @@ function applyProbabilityModelAdjustment(
   }
 
   return finalScore
+}
+
+function applyExternalModelAdjustment(
+  currentScore: number,
+  advisor: ExternalModelAdvisor | null,
+  reasons: string[],
+  risks: string[],
+) {
+  if (!advisor || advisor.status === 'unconfigured') {
+    risks.push('外部时序基础模型军师未配置，当前不参与分数放大。')
+    return currentScore
+  }
+  if (advisor.status === 'error' || advisor.upProbability === null) {
+    risks.push(`外部时序基础模型军师不可用：${advisor.summary}`)
+    return currentScore
+  }
+  const gate = advisor.backtestGate
+  if (!gate || gate.status === 'insufficient') {
+    risks.push(`外部模型军师暂不加权：${gate?.summary ?? '缺少同类分桶回测约束。'}`)
+    return currentScore
+  }
+  if (gate.status === 'weak' || gate.weightMultiplier <= 0) {
+    risks.push(`外部模型军师被分桶回测拦截：${gate.summary}`)
+    return currentScore
+  }
+
+  const modelScore = advisor.upProbability * 100
+  const weight = clamp(advisor.confidence / 100 * 0.16 * gate.weightMultiplier, 0.02, 0.16)
+  const blended = currentScore * (1 - weight) + modelScore * weight
+  const maxBoost = gate.status === 'strong'
+    ? advisor.confidence >= 70 ? 5 : 3
+    : 2
+  const adjusted = blended > currentScore
+    ? Math.min(blended, currentScore + maxBoost)
+    : blended
+
+  if (advisor.upProbability >= 0.6) {
+    reasons.push(`外部模型军师：${advisor.summary} ${gate.summary}`)
+  } else if (advisor.upProbability <= 0.45) {
+    risks.push(`外部模型军师偏谨慎：${advisor.summary}，当前信号降权。`)
+  } else {
+    risks.push(`外部模型军师中性：${advisor.summary}，不放大当前信号。`)
+  }
+  return adjusted
+}
+
+function buildExternalModelOpinion(advisor: ExternalModelAdvisor | null): ExpertOpinion | null {
+  if (!advisor) {
+    return null
+  }
+  const liveBullish = advisor.status === 'live' && advisor.upProbability !== null && advisor.upProbability >= 0.6
+  const liveBearish = advisor.status === 'live' && advisor.upProbability !== null && advisor.upProbability <= 0.45
+  return {
+    id: 'foundation-model-advisor',
+    name: '时序基础模型军师',
+    role: 'Chronos/TimesFM/Moirai 兼容预测',
+    action: liveBullish ? 'watch' : liveBearish ? 'avoid' : 'wait',
+    stance: liveBullish ? 'bullish' : liveBearish ? 'risk_off' : 'cautious',
+    confidence: advisor.confidence,
+    headline: advisor.summary,
+    rationale: advisor.rationale,
+    risk: [
+      advisor.backtestGate?.summary,
+      ...advisor.risks,
+    ].filter(Boolean).join('；') || '外部模型只做低权重参考，不能替代回测和风控。',
+    methodTags: [advisor.modelName, advisor.provider, `${advisor.horizonMinutes}m`, '外部时序模型'],
+  }
 }
 
 function scorePatternSignals(
