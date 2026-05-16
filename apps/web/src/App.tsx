@@ -37,7 +37,9 @@ type SourceHealth = 'live' | 'stale' | 'offline'
 type ViewMode = 'intraday' | 'candles'
 type TerminalView = 'dashboard' | 'backtest' | 'providers'
 type Timeframe = '1m' | '5m' | '15m' | '60m'
+type QuoteBoardTab = 'consensus' | 'icbc' | 'sge' | 'banks'
 type OpportunityLevel = 'normal' | 'watch' | 'strong' | 'elevated' | 'critical' | 'none'
+type OpportunityTab = 'decision' | 'plan' | 'risk' | 'evidence' | 'validation'
 type Indicator = 'ma' | 'boll' | 'rsi' | 'macd'
 type ExpertAction = 'accumulate' | 'watch' | 'wait' | 'avoid'
 type ExpertStance = 'bullish' | 'neutral' | 'cautious' | 'risk_off'
@@ -343,10 +345,15 @@ type DataQualityInfo = {
 
 type QuotePayload = {
   price: number
+  activePrice: number
+  regularPrice: number
+  sellPrice: number
   updatedAt: string
   fetchedAt?: string
   sourceName: string
   sourceKind: 'official' | 'fallback'
+  productName: string
+  productCode: string
   sourceStatus: {
     active: 'official' | 'fallback' | null
     stale: boolean
@@ -360,6 +367,14 @@ type QuotePayload = {
     tradingDate: string | null
     au9999: ReferenceQuote | null
     autd: ReferenceQuote | null
+    domesticReferences?: ReferenceQuote[]
+    consensusPrice?: number | null
+    consensusDeviationPercent?: number | null
+    tradingSession?: {
+      isTradingTime: boolean
+      status: 'trading' | 'closed' | 'unknown'
+      note: string
+    }
     calibration: {
       anchorSymbol: string | null
       anchorPrice: number | null
@@ -410,10 +425,32 @@ type PatternSignal = {
 
 type ReferenceQuote = {
   symbol: string
+  label?: string
   latestPrice: number
   highPrice: number
   lowPrice: number
   openPrice: number
+  unit?: string
+  provider?: string
+  updatedAt?: string | null
+  note?: string
+}
+
+type QuoteBoardEntry = {
+  id: string
+  tab: QuoteBoardTab
+  label: string
+  symbol: string
+  price: number
+  high: number | null
+  low: number | null
+  open: number | null
+  previousClose: number | null
+  unit: string
+  updatedAt: string | null
+  source: string
+  confidence: '官方' | '核心锚' | '参考' | '校准'
+  note: string
 }
 
 type HistoryPoint = {
@@ -569,6 +606,13 @@ const TIMEFRAMES: Array<{ id: Timeframe; label: string; minutes: number }> = [
   { id: '60m', label: '60分', minutes: 60 },
 ]
 
+const QUOTE_BOARD_TABS: Array<{ id: QuoteBoardTab; label: string }> = [
+  { id: 'consensus', label: '校准价' },
+  { id: 'icbc', label: '工银' },
+  { id: 'sge', label: 'AU9999' },
+  { id: 'banks', label: '银行参考' },
+]
+
 const INDICATORS: Array<{ id: Indicator; label: string }> = [
   { id: 'ma', label: 'MA' },
   { id: 'boll', label: 'BOLL' },
@@ -604,6 +648,7 @@ function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('intraday')
   const [terminalView, setTerminalView] = useState<TerminalView>('dashboard')
   const [timeframe, setTimeframe] = useState<Timeframe>('5m')
+  const [quoteBoardTab, setQuoteBoardTab] = useState<QuoteBoardTab>('consensus')
   const [activeIndicators, setActiveIndicators] = useState<Indicator[]>([
     'ma',
     'boll',
@@ -787,7 +832,17 @@ function App() {
     },
     [activeTimeframe.minutes, recentHistory, serverCandles, timeframe],
   )
-  const quoteRows = [quote?.marketReference.au9999, quote?.marketReference.autd]
+  const quoteRows = [
+    quote?.marketReference.au9999,
+    quote?.marketReference.autd,
+    ...(quote?.marketReference.domesticReferences ?? []),
+  ]
+  const quoteBoardRows = useMemo(() => buildQuoteBoardRows(quote), [quote])
+  const visibleQuoteBoardRows = quoteBoardRows.filter((item) => item.tab === quoteBoardTab)
+  const mainDisplayQuote = useMemo(() => selectMainDisplayQuote(quote, quoteBoardRows), [
+    quote,
+    quoteBoardRows,
+  ])
   const sourceMeta = SOURCE_META[sourceHealth]
   const lastUpdatedText = quote ? formatDateTime(quote.updatedAt) : '--'
   const lastAttemptText = lastAttemptAt ? formatDateTime(lastAttemptAt) : '--'
@@ -826,13 +881,13 @@ function App() {
     <main className="terminal">
       <header className="quote-strip">
         <div className="identity">
-          <strong>工银积存金</strong>
-          <span>ICBC_ACCUMULATION_GOLD</span>
+          <strong>{mainDisplayQuote?.label ?? '工银积存金'}</strong>
+          <span>{mainDisplayQuote?.symbol ?? 'ICBC_ACCUMULATION_GOLD'}</span>
         </div>
         <div className="live-price">
-          <strong>{quote ? currencyFormatter.format(quote.price) : '--'}</strong>
-          <span className={quote && quote.stats24h.percentChange24h >= 0 ? 'up' : 'down'}>
-            {quote ? formatSignedPercent(quote.stats24h.percentChange24h) : '--'}
+          <strong>{mainDisplayQuote ? currencyFormatter.format(mainDisplayQuote.price) : '--'}</strong>
+          <span className={mainDisplayQuote && getBoardEntryChange(mainDisplayQuote) >= 0 ? 'up' : 'down'}>
+            {mainDisplayQuote ? formatSignedPercent(getBoardEntryChange(mainDisplayQuote)) : '--'}
           </span>
         </div>
         <div className={`signal-status signal-status--${signalMeta.tone}`}>
@@ -865,6 +920,57 @@ function App() {
           <strong>{dataStatus.detail}</strong>
         </section>
       ) : null}
+
+      <section className="quote-board-panel">
+        <div className="quote-board-panel__head">
+          <div>
+            <strong>多源行情校准</strong>
+            <span>主屏默认展示校准价；工银原始价、AU9999、浙商积存金可切换复核。</span>
+          </div>
+          <div className="quote-board-tabs" role="tablist" aria-label="行情来源切换">
+            {QUOTE_BOARD_TABS.map((tab) => (
+              <button
+                className={quoteBoardTab === tab.id ? 'is-active' : ''}
+                key={tab.id}
+                onClick={() => setQuoteBoardTab(tab.id)}
+                type="button"
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="quote-board-table">
+          <div className="quote-board-table__head">
+            <span>来源</span>
+            <span>最新</span>
+            <span>涨跌</span>
+            <span>高/低</span>
+            <span>更新时间</span>
+          </div>
+          {visibleQuoteBoardRows.map((item) => (
+            <div className="quote-board-table__row" key={item.id} title={item.note}>
+              <span>
+                <strong>{item.label}</strong>
+                <small>{item.symbol} · {item.confidence}</small>
+              </span>
+              <strong>{currencyFormatter.format(item.price)}</strong>
+              <span className={getBoardEntryChange(item) >= 0 ? 'up' : 'down'}>
+                {formatSignedPercent(getBoardEntryChange(item))}
+              </span>
+              <span>
+                {item.high === null || item.low === null
+                  ? '--'
+                  : `${currencyFormatter.format(item.high)} / ${currencyFormatter.format(item.low)}`}
+              </span>
+              <span>{item.updatedAt ? formatDateTime(item.updatedAt) : '--'}</span>
+            </div>
+          ))}
+          {visibleQuoteBoardRows.length === 0 ? (
+            <div className="quote-board-table__empty">该分组暂无可用行情，等待下一轮刷新。</div>
+          ) : null}
+        </div>
+      </section>
 
       {buySignal ? (
         <section className={`opportunity-alert opportunity-alert--${signalMeta.tone}`}>
@@ -1034,80 +1140,95 @@ function App() {
 
         <aside className="side-rail">
           <OpportunityPanel
+            marketCards={(
+              <>
+                <Panel title="盘口概览" icon={<Activity size={16} />}>
+                  <StatLine
+                    label="24h 涨跌"
+                    value={quote ? formatSignedPercent(quote.stats24h.percentChange24h) : '--'}
+                    tone={quote && quote.stats24h.percentChange24h >= 0 ? 'up' : 'down'}
+                  />
+                  <StatLine
+                    label="24h 回撤"
+                    value={quote ? formatSignedPercent(-quote.stats24h.drawdownPercent24h) : '--'}
+                    tone={quote && quote.stats24h.drawdownPercent24h > 0 ? 'down' : 'flat'}
+                  />
+                  <StatLine
+                    label="采样点"
+                    value={quote ? String(quote.stats24h.pointCount) : '--'}
+                  />
+                  <StatLine
+                    label="数据质量"
+                    value={quote?.quality ? `${quote.quality.score}/100` : '--'}
+                    tone={getQualityTone(quote?.quality?.level)}
+                  />
+                  <StatLine label="来源" value={quote?.sourceName ?? '--'} />
+                </Panel>
+
+                <Panel title="联合校准" icon={<Target size={16} />}>
+                  <StatLine
+                    label={displayAnchor.label}
+                    value={anchorPrice === null ? '--' : currencyFormatter.format(anchorPrice)}
+                  />
+                  <StatLine
+                    label="价差"
+                    value={anchorSpread === null ? '--' : formatSignedCurrency(anchorSpread)}
+                    tone={anchorSpread !== null && anchorSpread >= 0 ? 'up' : 'down'}
+                  />
+                  <StatLine
+                    label="偏离率"
+                    value={anchorPremium === null ? '--' : formatSignedPercent(anchorPremium)}
+                    tone={anchorPremium !== null && anchorPremium >= 0 ? 'up' : 'down'}
+                  />
+                  <StatLine
+                    label="区间"
+                    value={withinReferenceRange === null ? '--' : withinReferenceRange ? '内' : '外'}
+                  />
+                  <StatLine
+                    label="多源共识"
+                    value={quote?.marketReference.consensusPrice ? currencyFormatter.format(quote.marketReference.consensusPrice) : '--'}
+                  />
+                  <StatLine
+                    label="共识偏离"
+                    value={quote?.marketReference.consensusDeviationPercent === null || quote?.marketReference.consensusDeviationPercent === undefined ? '--' : formatSignedPercent(quote.marketReference.consensusDeviationPercent)}
+                    tone={quote?.marketReference.consensusDeviationPercent !== undefined && quote?.marketReference.consensusDeviationPercent !== null && quote.marketReference.consensusDeviationPercent >= 0 ? 'up' : 'down'}
+                  />
+                  <StatLine
+                    label="交易时段"
+                    value={quote?.marketReference.tradingSession?.isTradingTime ? '交易中' : '休市/非主时段'}
+                  />
+                  <p className="panel-note">{displayAnchor.note}</p>
+                </Panel>
+
+                <Panel title="上金所延时行情">
+                  <div className="market-book">
+                    <div className="market-book__head">
+                      <span>合约</span>
+                      <span>最新</span>
+                      <span>高</span>
+                      <span>低</span>
+                    </div>
+                    {quoteRows.map((item, index) => (
+                      <div className="market-book__row" key={item?.symbol ?? `empty-${index}`}>
+                        <span>{item?.label ?? item?.symbol ?? '--'}</span>
+                        <strong>{item ? currencyFormatter.format(item.latestPrice) : '--'}</strong>
+                        <span>{item ? currencyFormatter.format(item.highPrice) : '--'}</span>
+                        <span>{item ? currencyFormatter.format(item.lowPrice) : '--'}</span>
+                      </div>
+                    ))}
+                    {quoteRows.every((item) => item === null || item === undefined) ? (
+                      <p className="panel-note">
+                        上金所延时锚暂未返回有效报价，页面已用工行日内高低做临时参考。
+                      </p>
+                    ) : null}
+                  </div>
+                </Panel>
+              </>
+            )}
             monitor={backtestMonitor}
             signal={buySignal}
             transparency={signalTransparency}
           />
-          <BacktestMonitorPanel monitor={backtestMonitor} />
-
-          <Panel title="盘口概览" icon={<Activity size={16} />}>
-            <StatLine
-              label="24h 涨跌"
-              value={quote ? formatSignedPercent(quote.stats24h.percentChange24h) : '--'}
-              tone={quote && quote.stats24h.percentChange24h >= 0 ? 'up' : 'down'}
-            />
-            <StatLine
-              label="24h 回撤"
-              value={quote ? formatSignedPercent(-quote.stats24h.drawdownPercent24h) : '--'}
-              tone={quote && quote.stats24h.drawdownPercent24h > 0 ? 'down' : 'flat'}
-            />
-            <StatLine
-              label="采样点"
-              value={quote ? String(quote.stats24h.pointCount) : '--'}
-            />
-            <StatLine
-              label="数据质量"
-              value={quote?.quality ? `${quote.quality.score}/100` : '--'}
-              tone={getQualityTone(quote?.quality?.level)}
-            />
-            <StatLine label="来源" value={quote?.sourceName ?? '--'} />
-          </Panel>
-
-          <Panel title="联合校准" icon={<Target size={16} />}>
-            <StatLine
-              label={displayAnchor.label}
-              value={anchorPrice === null ? '--' : currencyFormatter.format(anchorPrice)}
-            />
-            <StatLine
-              label="价差"
-              value={anchorSpread === null ? '--' : formatSignedCurrency(anchorSpread)}
-              tone={anchorSpread !== null && anchorSpread >= 0 ? 'up' : 'down'}
-            />
-            <StatLine
-              label="偏离率"
-              value={anchorPremium === null ? '--' : formatSignedPercent(anchorPremium)}
-              tone={anchorPremium !== null && anchorPremium >= 0 ? 'up' : 'down'}
-            />
-            <StatLine
-              label="区间"
-              value={withinReferenceRange === null ? '--' : withinReferenceRange ? '内' : '外'}
-            />
-            <p className="panel-note">{displayAnchor.note}</p>
-          </Panel>
-
-          <Panel title="上金所延时行情">
-            <div className="market-book">
-              <div className="market-book__head">
-                <span>合约</span>
-                <span>最新</span>
-                <span>高</span>
-                <span>低</span>
-              </div>
-              {quoteRows.map((item, index) => (
-                <div className="market-book__row" key={item?.symbol ?? `empty-${index}`}>
-                  <span>{item?.symbol ?? '--'}</span>
-                  <strong>{item ? currencyFormatter.format(item.latestPrice) : '--'}</strong>
-                  <span>{item ? currencyFormatter.format(item.highPrice) : '--'}</span>
-                  <span>{item ? currencyFormatter.format(item.lowPrice) : '--'}</span>
-                </div>
-              ))}
-              {quoteRows.every((item) => item === null || item === undefined) ? (
-                <p className="panel-note">
-                  上金所延时锚暂未返回有效报价，页面已用工行日内高低做临时参考。
-                </p>
-              ) : null}
-            </div>
-          </Panel>
         </aside>
       </section>
       )}
@@ -1116,11 +1237,13 @@ function App() {
 }
 
 function OpportunityPanel(props: {
+  marketCards?: React.ReactNode
   monitor: BacktestMonitor | null
   signal: OpportunityInfo | null
   transparency: SignalTransparency
 }) {
   const meta = getOpportunityMeta(props.signal?.level ?? 'none')
+  const [activeTab, setActiveTab] = useState<OpportunityTab>('decision')
 
   return (
     <article className={`panel opportunity-panel opportunity-panel--${meta.tone}`}>
@@ -1133,28 +1256,70 @@ function OpportunityPanel(props: {
         <span>Signal Score</span>
         <strong>{formatScore(props.signal?.score ?? null)}</strong>
       </div>
-      <SignalTransparencyPanel transparency={props.transparency} />
-      <TradePlanPanel tradePlan={props.signal?.tradePlan ?? null} />
-      <EventRiskPanel eventRisk={props.signal?.eventRisk ?? null} />
-      <PsychologyPanel psychology={props.signal?.psychology ?? null} />
-      <ConfluencePanel confluence={props.signal?.confluence ?? null} />
-      <ScoreMethodologyPanel monitor={props.monitor} signal={props.signal} />
-      <ExpertCouncil
-        consensus={props.signal?.expertConsensus ?? null}
-        marketContext={props.signal?.marketContext ?? null}
-        opinions={props.signal?.expertOpinions ?? []}
-      />
-      <ValuationPanel valuation={props.signal?.valuation ?? null} />
-      <SignalList
-        emptyText="暂无后端 reasons"
-        items={props.signal?.reasons ?? []}
-        title="Reasons"
-      />
-      <SignalList
-        emptyText="暂无后端 risks"
-        items={props.signal?.risks ?? []}
-        title="Risks"
-      />
+      <div className="opportunity-tabs" role="tablist" aria-label="买点观察功能切换">
+        {OPPORTUNITY_TABS.map((tab) => (
+          <button
+            aria-selected={activeTab === tab.id}
+            className={activeTab === tab.id ? 'active' : ''}
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            role="tab"
+            type="button"
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      <div className="opportunity-tab-panel" role="tabpanel">
+        {activeTab === 'decision' ? (
+          <>
+            <DecisionBriefPanel signal={props.signal} transparency={props.transparency} />
+            <SignalTransparencyPanel compact transparency={props.transparency} />
+            <SignalList
+              emptyText="暂无核心买点依据"
+              items={(props.signal?.reasons ?? []).slice(0, 3)}
+              title="核心理由"
+            />
+            <SignalList
+              emptyText="暂无核心风险"
+              items={(props.signal?.risks ?? []).slice(0, 3)}
+              title="核心风险"
+            />
+          </>
+        ) : null}
+        {activeTab === 'plan' ? (
+          <TradePlanPanel tradePlan={props.signal?.tradePlan ?? null} />
+        ) : null}
+        {activeTab === 'risk' ? (
+          <>
+            <EventRiskPanel eventRisk={props.signal?.eventRisk ?? null} />
+            <PsychologyPanel psychology={props.signal?.psychology ?? null} />
+            <HardGatePanel
+              guardrail={props.transparency.guardrail}
+              hardGates={props.transparency.hardGates}
+            />
+            <SignalList
+              emptyText="暂无后端 risks"
+              items={props.signal?.risks ?? []}
+              title="全部风险"
+            />
+          </>
+        ) : null}
+        {activeTab === 'evidence' ? (
+          <>
+            <ConfluencePanel confluence={props.signal?.confluence ?? null} />
+            <ScoreMethodologyPanel monitor={props.monitor} signal={props.signal} />
+            <ExpertCouncil
+              consensus={props.signal?.expertConsensus ?? null}
+              marketContext={props.signal?.marketContext ?? null}
+              opinions={props.signal?.expertOpinions ?? []}
+            />
+            <ValuationPanel valuation={props.signal?.valuation ?? null} />
+            {props.marketCards}
+          </>
+        ) : null}
+        {activeTab === 'validation' ? <BacktestMonitorPanel monitor={props.monitor} /> : null}
+      </div>
       <p className="opportunity-disclaimer">
         信号用于观察和复核，不承诺收益；请结合自身风险承受能力判断。
       </p>
@@ -1162,7 +1327,43 @@ function OpportunityPanel(props: {
   )
 }
 
-function SignalTransparencyPanel(props: { transparency: SignalTransparency }) {
+const OPPORTUNITY_TABS: Array<{ id: OpportunityTab; label: string }> = [
+  { id: 'decision', label: '决策' },
+  { id: 'plan', label: '计划' },
+  { id: 'risk', label: '风控' },
+  { id: 'evidence', label: '依据' },
+  { id: 'validation', label: '验证' },
+]
+
+function DecisionBriefPanel(props: {
+  signal: OpportunityInfo | null
+  transparency: SignalTransparency
+}) {
+  const plan = props.signal?.tradePlan ?? null
+  const action = plan?.actionLabel ?? getOpportunityMeta(props.signal?.level ?? 'none').label
+  const position = plan?.positionSuggestion ?? props.signal?.summary ?? '等待更多实时样本确认。'
+  const riskReward = plan?.riskRewardRatio === null || plan?.riskRewardRatio === undefined
+    ? '--'
+    : `${plan.riskRewardRatio}:1`
+
+  return (
+    <section className="decision-brief">
+      <header>
+        <strong>当前决策</strong>
+        <span>{props.transparency.verdict}</span>
+      </header>
+      <div className="decision-brief__grid">
+        <MetricCard label="动作" value={action} />
+        <MetricCard label="赔率" value={riskReward} />
+        <MetricCard label="上涨概率" value={formatProbability(props.transparency.probability)} />
+        <MetricCard label="可靠性" value={props.transparency.reliability === null ? '--' : `${props.transparency.reliability}/100`} />
+      </div>
+      <p>{position}</p>
+    </section>
+  )
+}
+
+function SignalTransparencyPanel(props: { compact?: boolean; transparency: SignalTransparency }) {
   return (
     <section className="signal-transparency">
       <header>
@@ -1185,8 +1386,24 @@ function SignalTransparencyPanel(props: { transparency: SignalTransparency }) {
           }
         />
       </div>
+      {!props.compact ? (
+        <HardGatePanel
+          guardrail={props.transparency.guardrail}
+          hardGates={props.transparency.hardGates}
+        />
+      ) : null}
+    </section>
+  )
+}
+
+function HardGatePanel(props: {
+  guardrail: string
+  hardGates: SignalTransparency['hardGates']
+}) {
+  return (
+    <section className="hard-gate-panel">
       <div className="hard-gate-grid">
-        {props.transparency.hardGates.map((gate) => (
+        {props.hardGates.map((gate) => (
           <article className={`hard-gate hard-gate--${gate.status}`} key={gate.label}>
             <span>{hardGateLabel(gate.status)}</span>
             <strong>{gate.label}</strong>
@@ -1194,7 +1411,7 @@ function SignalTransparencyPanel(props: { transparency: SignalTransparency }) {
           </article>
         ))}
       </div>
-      <p>{props.transparency.guardrail}</p>
+      <p>{props.guardrail}</p>
     </section>
   )
 }
@@ -2325,6 +2542,152 @@ function StatLine(props: {
       <strong className={props.tone ?? ''}>{props.value}</strong>
     </div>
   )
+}
+
+function buildQuoteBoardRows(quote: QuotePayload | null): QuoteBoardEntry[] {
+  if (!quote) {
+    return []
+  }
+
+  const rows: QuoteBoardEntry[] = []
+  const push = (entry: QuoteBoardEntry) => {
+    if (Number.isFinite(entry.price) && entry.price > 0) {
+      rows.push(entry)
+    }
+  }
+
+  if (quote.marketReference.consensusPrice) {
+    push({
+      id: 'consensus',
+      tab: 'consensus',
+      label: '多源校准价',
+      symbol: 'ICBC + AU9999 + 银行参考',
+      price: quote.marketReference.consensusPrice,
+      high: null,
+      low: null,
+      open: null,
+      previousClose: null,
+      unit: '元/克',
+      updatedAt: quote.fetchedAt ?? quote.updatedAt,
+      source: 'median-consensus',
+      confidence: '校准',
+      note: '采用工银字段、上金所 AU9999/Au(T+D)、国内黄金与银行参考价的中位数，优先用于发现单源偏离。',
+    })
+  }
+
+  push({
+    id: 'icbc-active',
+    tab: 'icbc',
+    label: '工银主动价',
+    symbol: quote.productCode || 'ICBC_ACCUMULATION_GOLD',
+    price: quote.activePrice ?? quote.price,
+    high: quote.dayRange.high,
+    low: quote.dayRange.low,
+    open: null,
+    previousClose: quote.regularPrice ?? null,
+    unit: '元/克',
+    updatedAt: quote.updatedAt,
+    source: quote.sourceName,
+    confidence: quote.sourceKind === 'official' ? '官方' : '参考',
+    note: '工银异步行情返回的 ActivePrice，可能与 App 展示口径或参考价存在差异。',
+  })
+  push({
+    id: 'icbc-regular',
+    tab: 'icbc',
+    label: '工银参考价',
+    symbol: quote.productCode || 'ICBC_ACCUMULATION_GOLD',
+    price: quote.regularPrice,
+    high: null,
+    low: null,
+    open: null,
+    previousClose: null,
+    unit: '元/克',
+    updatedAt: quote.updatedAt,
+    source: quote.sourceName,
+    confidence: quote.sourceKind === 'official' ? '官方' : '参考',
+    note: '工银异步行情返回的 RegPrice。若与主动价差异大，应以 App 实际交易页复核。',
+  })
+  push({
+    id: 'icbc-sell',
+    tab: 'icbc',
+    label: '工银赎回价',
+    symbol: quote.productCode || 'ICBC_ACCUMULATION_GOLD',
+    price: quote.sellPrice,
+    high: null,
+    low: null,
+    open: null,
+    previousClose: null,
+    unit: '元/克',
+    updatedAt: quote.updatedAt,
+    source: quote.sourceName,
+    confidence: quote.sourceKind === 'official' ? '官方' : '参考',
+    note: '工银异步行情返回的 SellPrice，用于辅助区分买入/赎回口径。',
+  })
+
+  for (const item of [quote.marketReference.au9999, quote.marketReference.autd]) {
+    if (!item) {
+      continue
+    }
+    push(referenceToBoardEntry(item, 'sge', '核心锚', quote.marketReference.sourceName, quote.marketReference.tradingDate))
+  }
+  for (const item of quote.marketReference.domesticReferences ?? []) {
+    push(referenceToBoardEntry(item, 'banks', '参考', item.provider ?? '国内黄金参考', item.updatedAt ?? null))
+  }
+
+  return rows
+}
+
+function referenceToBoardEntry(
+  item: ReferenceQuote,
+  tab: QuoteBoardTab,
+  confidence: QuoteBoardEntry['confidence'],
+  source: string,
+  updatedAt: string | null,
+): QuoteBoardEntry {
+  return {
+    id: `${tab}-${item.symbol}`,
+    tab,
+    label: item.label ?? item.symbol,
+    symbol: item.symbol,
+    price: item.latestPrice,
+    high: item.highPrice,
+    low: item.lowPrice,
+    open: item.openPrice,
+    previousClose: item.openPrice,
+    unit: item.unit ?? '元/克',
+    updatedAt,
+    source,
+    confidence,
+    note: item.note ?? `${item.label ?? item.symbol} 作为多源行情校准参考。`,
+  }
+}
+
+function selectMainDisplayQuote(
+  quote: QuotePayload | null,
+  rows: QuoteBoardEntry[],
+): QuoteBoardEntry | null {
+  if (!quote) {
+    return null
+  }
+
+  const consensus = rows.find((item) => item.id === 'consensus')
+  const raw = rows.find((item) => item.id === 'icbc-active')
+  if (!consensus) {
+    return raw ?? null
+  }
+
+  const deviation = quote.marketReference.consensusDeviationPercent
+  if (deviation === null || deviation === undefined || Math.abs(deviation) >= 0.0015) {
+    return consensus
+  }
+  return raw ?? consensus
+}
+
+function getBoardEntryChange(entry: QuoteBoardEntry) {
+  if (entry.previousClose && entry.previousClose > 0) {
+    return (entry.price - entry.previousClose) / entry.previousClose
+  }
+  return 0
 }
 
 function buildDisplayAnchor(quote: QuotePayload | null): DisplayAnchor {

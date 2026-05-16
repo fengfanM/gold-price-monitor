@@ -20,6 +20,7 @@ POSTGRES_HTTP_TIMEOUT_MS=5000
 CRON_SECRET=replace-with-strong-cron-secret
 INGEST_REFRESH_TTL_MS=60000
 FRED_API_KEY=replace-if-available
+ZHESHANG_ACCUMULATION_GOLD_URL=https://api.tangdouz.com/a/zsgold.php
 GLD_HOLDINGS_CSV_URL=https://your-official-gld-holdings-mirror.csv
 LBMA_GOLD_PM_CSV_URL=https://your-lbma-gold-pm.csv
 IBA_GOLD_PM_CSV_URL=https://your-iba-authorized-gold-pm.csv
@@ -131,6 +132,8 @@ CSV 文件默认按“最新行在第一行”解析，至少需要一个日期�
 - `CME_GOLD_OI_CSV_URL`：列名可包含 `open interest`、`openinterest`、`oi`、`value`。
 - `CME_GOLD_OI_OFFICIAL_CSV_URL`：CME 授权未平仓源别名；`CME_GOLD_OI_CSV_AUTH_HEADER` 可传授权 header。
 - `CME_GOLD_VOLUME_CSV_URL`：列名可包含 `volume`、`total volume`、`value`；未配置时用 Yahoo `GC=F` 日成交量作短线活跃度代理。
+- `ZHESHANG_ACCUMULATION_GOLD_URL`：浙商积存金参考源。默认使用第三方文本镜像，只参与“银行参考/多源校准”，不替代工银官方报价；若有浙商官方或自建镜像，可配置为 JSON 并用 `ZHESHANG_ACCUMULATION_GOLD_JSON_PATH` 指向价格字段。
+- `AU9999_REFERENCE_URL`：可选 AU9999 备用参考源。已有上金所延时页作为核心锚；该项用于官方源不可用时补充校准。
 
 ## 验收命令
 

@@ -14,6 +14,10 @@ import type {
 import { buildCandleSets } from './candles.js'
 import { attachMarketReference, fetchFallbackQuote, fetchOfficialQuote } from './icbc.js'
 import { buildMarketContext, buildUnavailableMarketContext } from './market-context.js'
+import {
+  fetchDomesticGoldReferenceQuotes,
+  type ProviderQuote,
+} from './market-providers.js'
 import { buildDataQuality, detectQuoteAnomalies } from './quality.js'
 import { fetchSgeReferenceQuotes } from './sge.js'
 import { buildBacktestMonitor } from './backtest.js'
@@ -222,12 +226,23 @@ export class QuoteService {
   }
 
   private async calibrateQuote(quote: QuoteSample) {
-    try {
-      const reference = await fetchSgeReferenceQuotes()
-      return attachMarketReference(quote, buildMarketReference(quote, reference))
-    } catch {
+    const [sgeResult, domesticResult] = await Promise.allSettled([
+      fetchSgeReferenceQuotes(),
+      fetchDomesticGoldReferenceQuotes(),
+    ])
+    const sgeReference = sgeResult.status === 'fulfilled' ? sgeResult.value : null
+    const domesticQuotes = domesticResult.status === 'fulfilled' && domesticResult.value.status === 'live'
+      ? domesticResult.value.data ?? []
+      : []
+
+    if (!sgeReference && domesticQuotes.length < 1) {
       return quote
     }
+
+    return attachMarketReference(
+      quote,
+      buildMarketReference(quote, sgeReference, domesticQuotes),
+    )
   }
 
   private async acceptQuote(quote: QuoteSample) {
@@ -334,9 +349,18 @@ export class QuoteService {
 
   private getSourceStatus(): SourceStatus {
     const lastSuccessAt = this.latestQuote?.fetchedAt ?? null
+    const upstreamUpdatedAt = this.latestQuote?.updatedAt ?? null
+    const session = getChinaGoldTradingSession()
+    const upstreamUpdatedAtMs = upstreamUpdatedAt ? new Date(upstreamUpdatedAt).getTime() : NaN
+    const upstreamStale = session.isTradingTime && (
+      !Number.isFinite(upstreamUpdatedAtMs) ||
+      Date.now() - upstreamUpdatedAtMs > Number(process.env.TRADING_QUOTE_STALE_MS ?? '90000')
+    )
     return {
       active: this.latestQuote?.sourceKind ?? null,
-      stale: !lastSuccessAt || Date.now() - new Date(lastSuccessAt).getTime() > STALE_MS,
+      stale: !lastSuccessAt ||
+        Date.now() - new Date(lastSuccessAt).getTime() > STALE_MS ||
+        upstreamStale,
       lastSuccessAt,
       official: { ...this.officialStatus },
       fallback: { ...this.fallbackStatus },
@@ -485,11 +509,36 @@ function buildAlert(stats: QuoteApiResponse['stats24h']): AlertInfo {
 
 function buildMarketReference(
   quote: QuoteSample,
-  reference: Awaited<ReturnType<typeof fetchSgeReferenceQuotes>>,
+  reference: Awaited<ReturnType<typeof fetchSgeReferenceQuotes>> | null,
+  domesticQuotes: ProviderQuote[] = [],
 ): MarketReference {
-  const anchor = [reference.au9999, reference.autd].find((item) => {
+  const domesticReferences = domesticQuotes
+    .filter((item) => Number.isFinite(item.value) && item.value > 0)
+    .map((item) => ({
+      symbol: item.symbol,
+      label: item.label || item.symbol,
+      latestPrice: item.value,
+      highPrice: Math.max(item.value, item.previousClose ?? item.value),
+      lowPrice: Math.min(item.value, item.previousClose ?? item.value),
+      openPrice: item.previousClose ?? item.value,
+      unit: item.unit,
+      provider: item.provider,
+      updatedAt: item.updatedAt,
+      note: item.provider === 'zheshang-accumulation-gold'
+        ? '第三方浙商积存金镜像源，仅作为银行同业参考，不替代浙商或工银官方成交价。'
+        : undefined,
+    }))
+  const anchor = [reference?.au9999 ?? null, reference?.autd ?? null, ...domesticReferences].find((item) => {
     return item !== null && item.latestPrice > 0
   }) ?? null
+  const consensusPrice = calculateConsensusPrice([
+    reference?.au9999?.latestPrice ?? null,
+    reference?.autd?.latestPrice ?? null,
+    ...domesticReferences.map((item) => item.latestPrice),
+  ])
+  const consensusDeviationPercent = consensusPrice === null
+    ? null
+    : (quote.price - consensusPrice) / consensusPrice
   const anchorPrice = normalizeReferencePrice(anchor?.latestPrice ?? null)
   const spread = anchorPrice === null ? null : quote.price - anchorPrice
   const premiumPercent =
@@ -500,12 +549,16 @@ function buildMarketReference(
     : null
 
   return {
-    sourceName: reference.sourceName,
-    sourceUrl: reference.sourceUrl,
-    isDelayed: reference.isDelayed,
-    tradingDate: reference.tradingDate,
-    au9999: reference.au9999,
-    autd: reference.autd,
+    sourceName: reference?.sourceName ?? '国内黄金多源参考',
+    sourceUrl: reference?.sourceUrl ?? '',
+    isDelayed: reference?.isDelayed ?? true,
+    tradingDate: reference?.tradingDate ?? null,
+    au9999: reference?.au9999 ?? null,
+    autd: reference?.autd ?? null,
+    domesticReferences,
+    consensusPrice,
+    consensusDeviationPercent,
+    tradingSession: getChinaGoldTradingSession(),
     calibration: {
       anchorSymbol: anchor?.symbol ?? null,
       anchorPrice,
@@ -513,8 +566,8 @@ function buildMarketReference(
       premiumPercent,
       withinReferenceRange,
       note: anchor
-        ? '工银积存金与上金所公开延时行情联合校准，仅作市场参考锚。'
-        : '未获取到可用的上金所参考锚。',
+        ? '工银积存金与上金所/AU9999/国内黄金参考源联合校准，仅作市场参考锚。'
+        : '未获取到可用的国内黄金参考锚。',
     },
   }
 }
@@ -531,4 +584,47 @@ function marketRegimeFromScore(score: number) {
 
 function normalizeReferencePrice(value: number | null) {
   return value !== null && Number.isFinite(value) && value > 0 ? value : null
+}
+
+function calculateConsensusPrice(values: Array<number | null>) {
+  const validValues = values
+    .filter((value): value is number => value !== null && Number.isFinite(value) && value > 0)
+    .sort((left, right) => left - right)
+  if (validValues.length < 1) {
+    return null
+  }
+  const middle = Math.floor(validValues.length / 2)
+  if (validValues.length % 2 === 1) {
+    return validValues[middle]
+  }
+  return (validValues[middle - 1] + validValues[middle]) / 2
+}
+
+function getChinaGoldTradingSession() {
+  const now = new Date()
+  const chinaTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }))
+  const day = chinaTime.getDay()
+  const minutes = chinaTime.getHours() * 60 + chinaTime.getMinutes()
+  const isWeekend = day === 0 || day === 6
+  if (isWeekend) {
+    return {
+      isTradingTime: false,
+      status: 'closed' as const,
+      note: '周末或节假日通常不更新，旧价不自动判为异常。',
+    }
+  }
+
+  const sessions = [
+    [9 * 60, 11 * 60 + 30],
+    [13 * 60 + 30, 15 * 60 + 30],
+    [20 * 60, 22 * 60 + 30],
+  ] as const
+  const isTradingTime = sessions.some(([start, end]) => minutes >= start && minutes <= end)
+  return {
+    isTradingTime,
+    status: isTradingTime ? 'trading' as const : 'closed' as const,
+    note: isTradingTime
+      ? '工作日交易时段，要求主报价和多源锚点保持新鲜一致。'
+      : '当前不在主要交易时段，允许报价源短暂停更。',
+  }
 }

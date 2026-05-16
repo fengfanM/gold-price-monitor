@@ -15,6 +15,12 @@ const CRITICAL_PREMIUM_THRESHOLD = Number(
 const WARNING_PREMIUM_THRESHOLD = Number(
   process.env.WARNING_PREMIUM_THRESHOLD ?? '0.025',
 )
+const TRADING_CONSENSUS_WARNING_THRESHOLD = Number(
+  process.env.TRADING_CONSENSUS_WARNING_THRESHOLD ?? '0.0025',
+)
+const TRADING_CONSENSUS_CRITICAL_THRESHOLD = Number(
+  process.env.TRADING_CONSENSUS_CRITICAL_THRESHOLD ?? '0.006',
+)
 
 export function detectQuoteAnomalies(
   quote: QuoteSample,
@@ -92,6 +98,30 @@ export function detectQuoteAnomalies(
     }
   }
 
+  const consensusDeviation = quote.marketReference.consensusDeviationPercent
+  if (
+    quote.marketReference.tradingSession?.isTradingTime &&
+    consensusDeviation !== null &&
+    consensusDeviation !== undefined
+  ) {
+    const absoluteDeviation = Math.abs(consensusDeviation)
+    if (absoluteDeviation >= TRADING_CONSENSUS_CRITICAL_THRESHOLD) {
+      anomalies.push({
+        code: 'critical_domestic_consensus_deviation',
+        severity: 'critical',
+        message: `工作日交易时段报价相对国内多源共识偏离 ${formatPercent(absoluteDeviation)}，已拒绝写入历史。`,
+        observedAt,
+      })
+    } else if (absoluteDeviation >= TRADING_CONSENSUS_WARNING_THRESHOLD) {
+      anomalies.push({
+        code: 'domestic_consensus_deviation',
+        severity: 'warning',
+        message: `工作日交易时段报价相对国内多源共识偏离 ${formatPercent(absoluteDeviation)}，请复核工银/浙商/AU9999。`,
+        observedAt,
+      })
+    }
+  }
+
   return anomalies
 }
 
@@ -101,7 +131,9 @@ export function buildDataQuality(
   sourceStatus: SourceStatus,
   anomalies: DataAnomaly[],
 ): DataQualityInfo {
-  const hasMarketAnchor = quote.marketReference.calibration.anchorPrice !== null
+  const hasMarketAnchor = quote.marketReference.calibration.anchorPrice !== null ||
+    quote.marketReference.consensusPrice !== null &&
+    quote.marketReference.consensusPrice !== undefined
   const activeChannel = getActiveChannelStatus(sourceStatus)
   const checks = {
     fresh: !sourceStatus.stale,

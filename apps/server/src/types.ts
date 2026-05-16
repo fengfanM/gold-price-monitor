@@ -4,10 +4,15 @@ export type SourceAvailability = 'unknown' | 'healthy' | 'down'
 
 export type MarketReferenceQuote = {
   symbol: string
+  label?: string
   latestPrice: number
   highPrice: number
   lowPrice: number
   openPrice: number
+  unit?: string
+  provider?: string
+  updatedAt?: string | null
+  note?: string
 }
 
 export type MarketReference = {
@@ -17,6 +22,14 @@ export type MarketReference = {
   tradingDate: string | null
   au9999: MarketReferenceQuote | null
   autd: MarketReferenceQuote | null
+  domesticReferences?: MarketReferenceQuote[]
+  consensusPrice?: number | null
+  consensusDeviationPercent?: number | null
+  tradingSession?: {
+    isTradingTime: boolean
+    status: 'trading' | 'closed' | 'unknown'
+    note: string
+  }
   calibration: {
     anchorSymbol: string | null
     anchorPrice: number | null

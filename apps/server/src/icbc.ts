@@ -7,7 +7,8 @@ const PAGE_URL =
   'https://mybank.icbc.com.cn/icbc/newperbank/perbank3/gold/goldaccrual_query_out.jsp'
 const ASYNC_URL =
   'https://mybank.icbc.com.cn/servlet/AsynGetDataServlet?tranCode=A00622'
-const PRODUCT_CODE = '080020000521'
+const PRODUCT_CODE = process.env.ICBC_PRODUCT_CODE ?? '080020000521'
+const PRICE_FIELD = normalizePriceField(process.env.ICBC_PRICE_FIELD)
 const ICBC_TIMEOUT_MS = Number(process.env.ICBC_TIMEOUT_MS ?? '3500')
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
@@ -85,8 +86,9 @@ export async function fetchOfficialQuote(): Promise<QuoteSample> {
     throw new Error('工行异步接口返回结构异常')
   }
 
+  const selectedPrice = selectDisplayPrice(row)
   return makeQuoteSample({
-    price: row.ActivePrice,
+    price: selectedPrice.price,
     updatedAt: payload.sysdate ?? new Date().toISOString(),
     dayLow: row.LowPrice,
     dayHigh: row.HighPrice,
@@ -95,6 +97,7 @@ export async function fetchOfficialQuote(): Promise<QuoteSample> {
     productName: row.ProductName ?? '积存金',
     productCode: row.proCode ?? PRODUCT_CODE,
     sourceKind: 'official',
+    sourceNameSuffix: selectedPrice.label,
     marketReference: emptyMarketReference(),
   })
 }
@@ -117,6 +120,7 @@ function parsePageQuote(html: string): QuoteSample {
     productName: '积存金',
     productCode,
     sourceKind: 'fallback',
+    sourceNameSuffix: '公开页主动价',
     marketReference: emptyMarketReference(),
   })
 }
@@ -149,6 +153,7 @@ function makeQuoteSample(input: {
   productName: string
   productCode: string
   sourceKind: QuoteSourceKind
+  sourceNameSuffix?: string
   marketReference: MarketReference
 }): QuoteSample {
   const fetchedAt = new Date().toISOString()
@@ -168,7 +173,10 @@ function makeQuoteSample(input: {
     updatedAt: normalizeTime(input.updatedAt),
     fetchedAt,
     sourceKind: input.sourceKind,
-    sourceName: input.sourceKind === 'official' ? '工银官方异步行情' : '工银行情公开页',
+    sourceName: [
+      input.sourceKind === 'official' ? '工银官方异步行情' : '工银行情公开页',
+      input.sourceNameSuffix,
+    ].filter(Boolean).join(' · '),
     marketReference: input.marketReference,
   }
 }
@@ -191,6 +199,14 @@ function emptyMarketReference(): MarketReference {
     tradingDate: null,
     au9999: null,
     autd: null,
+    domesticReferences: [],
+    consensusPrice: null,
+    consensusDeviationPercent: null,
+    tradingSession: {
+      isTradingTime: false,
+      status: 'unknown',
+      note: '市场交易时段尚未判断',
+    },
     calibration: {
       anchorSymbol: null,
       anchorPrice: null,
@@ -216,4 +232,24 @@ function normalizeTime(value: string) {
   }
 
   return `${value.replace(' ', 'T')}+08:00`
+}
+
+function normalizePriceField(value: string | undefined) {
+  if (value === 'regular' || value === 'reg') {
+    return 'regular' as const
+  }
+  if (value === 'sell') {
+    return 'sell' as const
+  }
+  return 'active' as const
+}
+
+function selectDisplayPrice(row: NonNullable<OfficialPayload['rf']>[number]) {
+  if (PRICE_FIELD === 'regular' && row.RegPrice) {
+    return { price: row.RegPrice, label: '参考价' }
+  }
+  if (PRICE_FIELD === 'sell' && row.SellPrice) {
+    return { price: row.SellPrice, label: '赎回价' }
+  }
+  return { price: row.ActivePrice, label: '主动价' }
 }

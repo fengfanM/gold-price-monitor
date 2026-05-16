@@ -8,11 +8,13 @@ import {
   fetchCmeGoldOpenInterest,
   fetchCmeGoldVolume,
   fetchCotGoldNetPosition,
+  fetchDomesticGoldReferenceQuotes,
   fetchFredSeries,
   fetchGldHoldings,
   fetchGoldBloggerSentiment,
   fetchGoldNewsSentiment,
   fetchLbmaGoldPm,
+  fetchZheshangAccumulationGoldQuote,
   getProviderHealthHistory,
   probeAllMarketProviders,
   fetchWorldGoldCouncilEtfFlow,
@@ -36,6 +38,11 @@ describe('market providers', () => {
     delete process.env.CME_GOLD_VOLUME_CSV_URL
     delete process.env.WGC_GOLD_ETF_FLOW_API_URL
     delete process.env.CENTRAL_BANK_GOLD_PAGE_URL
+    delete process.env.ZHESHANG_ACCUMULATION_GOLD_URL
+    delete process.env.ZHESHANG_ACCUMULATION_GOLD_JSON_PATH
+    delete process.env.AU9999_REFERENCE_URL
+    delete process.env.AU9999_REFERENCE_JSON_PATH
+    delete process.env.ACCUMULATION_GOLD_REFERENCE_URLS
   })
 
   it('parses FRED CSV rows and ignores missing observations', async () => {
@@ -69,6 +76,42 @@ describe('market providers', () => {
     assert.equal(result.data?.[0]?.symbol, 'JO_9753')
     assert.equal(result.data?.[0]?.value, 580.12)
     assert.equal(result.data?.[1]?.previousClose, 3375.1)
+  })
+
+  it('parses zheshang accumulation gold reference text', async () => {
+    process.env.ZHESHANG_ACCUMULATION_GOLD_URL = 'https://example.com/zheshang.json'
+    globalThis.fetch = (async () => new Response([
+      '浙商银行积存金价格信息',
+      '最新价格: 1002.89 元',
+      '前收盘价: 999.12 元',
+      '更新时间: 2026-5-16 2:30:5',
+    ].join('\n'))) as typeof fetch
+
+    const result = await fetchZheshangAccumulationGoldQuote()
+
+    assert.equal(result.status, 'live')
+    assert.equal(result.data?.value, 1002.89)
+    assert.equal(result.data?.previousClose, 999.12)
+    assert.equal(result.data?.updatedAt, '2026-05-16T02:30:05+08:00')
+  })
+
+  it('combines cngold and zheshang accumulation references', async () => {
+    process.env.ZHESHANG_ACCUMULATION_GOLD_URL = 'https://example.com/zheshang.txt'
+    const responses = [
+      new Response(`callback({
+        "JO_9753": { "q63": 1002.9, "q2": 1005.53, "unit": "元/克", "time": 1778868000000 },
+        "JO_92233": { "q63": 3380.5, "q2": 3375.1, "unit": "美元/盎司", "time": 1778868000000 },
+        "JO_92232": { "q63": 37.2, "q2": 37.0, "unit": "美元/盎司", "time": 1778868000000 }
+      });`),
+      new Response('最新价格: 1001.34 元\n前收盘价: 999.12 元'),
+    ]
+    globalThis.fetch = (async () => responses.shift() ?? new Response('', { status: 404 })) as typeof fetch
+
+    const result = await fetchDomesticGoldReferenceQuotes()
+
+    assert.equal(result.status, 'live')
+    assert.equal(result.data?.some((item) => item.label === '金投网国内黄金' && item.value === 1002.9), true)
+    assert.equal(result.data?.some((item) => item.label === '浙商积存金' && item.value === 1001.34), true)
   })
 
   it('parses COT gold net non-commercial position from CSV', async () => {
@@ -209,6 +252,7 @@ describe('market providers', () => {
         "JO_92233": { "q63": 3380.5, "q2": 3375.1 },
         "JO_92232": { "q63": 37.2, "q2": 37.0 }
       });`)],
+      ['tangdouz', new Response('最新价格: 580.10 元\n前收盘价: 578.40 元\n更新时间: 2026-5-16 2:30:5')],
       ['fredgraph', new Response('observation_date,VALUE\n2026-05-14,1.9\n2026-05-15,1.8')],
       ['CFTC', new Response('Date,Noncommercial Positions-Long (All),Noncommercial Positions-Short (All)\n2026-05-12,250000,120000')],
       ['gld.csv', new Response('Date,Tonnes in Trust\n2026-05-15,930\n2026-05-14,929')],

@@ -115,6 +115,13 @@ type CnGoldApiResponse = Record<string, {
 }>
 
 type CsvRow = Record<string, string>
+type ConfiguredDomesticReference = {
+  id?: string
+  label?: string
+  url?: string
+  jsonPath?: string
+  unit?: string
+}
 type ProviderSourceTier = 'critical' | 'core' | 'supporting' | 'experimental'
 type ProviderLatencyQuality = 'fast' | 'normal' | 'slow' | 'timed_out'
 type ProviderReliabilityRisk = 'low' | 'medium' | 'high'
@@ -150,6 +157,8 @@ const CNGOLD_ITEMS = {
   internationalGold: { code: 'JO_92233', label: '金投网国际黄金', unit: '美元/盎司' },
   internationalSilver: { code: 'JO_92232', label: '金投网国际白银', unit: '美元/盎司' },
 } as const
+const DEFAULT_ZHESHANG_ACCUMULATION_GOLD_URL =
+  'https://api.tangdouz.com/a/zsgold.php'
 
 const COT_GOLD_DATASET_URLS = [
   process.env.COT_GOLD_NET_URL,
@@ -339,6 +348,66 @@ export async function fetchCnGoldQuotes(): Promise<ProviderResult<ProviderQuote[
   })
 }
 
+export async function fetchDomesticGoldReferenceQuotes(): Promise<ProviderResult<ProviderQuote[]>> {
+  return safeProvider('domestic-gold-reference', async () => {
+    const quotes: ProviderQuote[] = []
+    const [cnGold, zheshang] = await Promise.all([
+      fetchCnGoldQuotes(),
+      fetchZheshangAccumulationGoldQuote(),
+    ])
+    if (cnGold.status === 'live' && cnGold.data) {
+      quotes.push(...cnGold.data.filter((item) => item.unit === '元/克'))
+    }
+    if (zheshang.status === 'live' && zheshang.data) {
+      quotes.push(zheshang.data)
+    }
+
+    quotes.push(...await fetchConfiguredDomesticReferences())
+    if (quotes.length < 1) {
+      throw new Error('未获取到国内黄金参考价')
+    }
+
+    return quotes
+  })
+}
+
+export async function fetchZheshangAccumulationGoldQuote(): Promise<ProviderResult<ProviderQuote>> {
+  const url = process.env.ZHESHANG_ACCUMULATION_GOLD_URL
+    ?? DEFAULT_ZHESHANG_ACCUMULATION_GOLD_URL
+  if (process.env.DISABLE_DEFAULT_ZHESHANG_REFERENCE === '1' && !process.env.ZHESHANG_ACCUMULATION_GOLD_URL) {
+    return {
+      provider: 'zheshang-accumulation-gold',
+      status: 'unavailable',
+      data: null,
+      error: '默认浙商积存金参考源已关闭',
+      latencyMs: 0,
+    }
+  }
+
+  return safeProvider('zheshang-accumulation-gold', async () => {
+    const response = await fetchWithTimeout(url, {
+      headers: {
+        accept: 'application/json,text/plain,*/*',
+        referer: 'https://www.czbank.com/',
+        'user-agent': BROWSER_USER_AGENT,
+      },
+    })
+    if (!response.ok) {
+      throw new Error(`浙商积存金 HTTP ${response.status}`)
+    }
+    const parsed = parseZheshangAccumulationGold(await response.text(), process.env.ZHESHANG_ACCUMULATION_GOLD_JSON_PATH)
+    return {
+      provider: 'zheshang-accumulation-gold',
+      symbol: 'ZHESHANG_ACCUMULATION_GOLD',
+      label: '浙商积存金',
+      value: parsed.price,
+      previousClose: parsed.previousClose,
+      unit: '元/克',
+      updatedAt: parsed.updatedAt,
+    }
+  })
+}
+
 export async function fetchCotGoldNetPosition(): Promise<ProviderResult<ProviderQuote>> {
   return safeProvider('cot', async () => {
     const errors: string[] = []
@@ -509,6 +578,7 @@ export async function probeAllMarketProviders(): Promise<ProviderHealthRecord[]>
     { id: 'T10YIE', label: '10Y 通胀预期', envVars: ['FRED_API_KEY'], sourceTier: 'core', participatesInScoring: true, run: () => fetchFredLatest('T10YIE', '10Y 通胀预期', '%') },
     { id: 'VIXCLS', label: 'VIX 恐慌指数', envVars: ['FRED_API_KEY'], sourceTier: 'supporting', participatesInScoring: true, run: () => fetchFredLatest('VIXCLS', 'VIX 恐慌指数', '点') },
     { id: 'CNGOLD', label: '金投网贵金属', envVars: [], sourceTier: 'supporting', participatesInScoring: true, run: () => fetchCnGoldQuotes() },
+    { id: 'ZHESHANG_ACCUMULATION_GOLD', label: '浙商积存金参考', envVars: ['ZHESHANG_ACCUMULATION_GOLD_URL'], sourceTier: 'supporting', participatesInScoring: true, run: () => fetchZheshangAccumulationGoldQuote() },
     { id: 'COT_GOLD_NET', label: 'CFTC 黄金非商净多头', envVars: ['COT_GOLD_NET_URL'], sourceTier: 'core', participatesInScoring: true, run: () => fetchCotGoldNetPosition() },
     { id: 'GLD_FLOW', label: 'GLD ETF 持仓变化', envVars: ['GLD_HOLDINGS_CSV_URL', 'GLD_HOLDINGS_URL'], sourceTier: 'core', participatesInScoring: true, run: () => fetchGldHoldings() },
     { id: 'LBMA_GOLD_PM', label: 'LBMA/IBA 伦敦金 PM 定盘', envVars: ['LBMA_GOLD_PM_CSV_URL', 'IBA_GOLD_PM_CSV_URL', 'LBMA_GOLD_PM_CSV_AUTH_HEADER'], sourceTier: 'core', participatesInScoring: true, run: () => fetchLbmaGoldPm() },
@@ -710,6 +780,122 @@ function parseCsvLine(line: string) {
   }
   values.push(current.trim())
   return values
+}
+
+async function fetchConfiguredDomesticReferences() {
+  const references = parseConfiguredDomesticReferences()
+  const quotes: ProviderQuote[] = []
+  for (const reference of references) {
+    if (!reference.url) {
+      continue
+    }
+    const response = await fetchWithTimeout(reference.url, {
+      headers: {
+        accept: 'application/json,text/plain,*/*',
+      },
+    })
+    if (!response.ok) {
+      continue
+    }
+    const text = await response.text()
+    const value = extractConfiguredReferenceValue(text, reference.jsonPath)
+    if (value === null || value <= 0) {
+      continue
+    }
+    quotes.push({
+      provider: 'configured-domestic-gold',
+      symbol: reference.id ?? reference.label ?? reference.url,
+      label: reference.label ?? reference.id ?? '配置国内黄金参考价',
+      value,
+      previousClose: null,
+      unit: reference.unit ?? '元/克',
+      updatedAt: null,
+    })
+  }
+  return quotes
+}
+
+function parseConfiguredDomesticReferences(): ConfiguredDomesticReference[] {
+  const references: ConfiguredDomesticReference[] = []
+  if (process.env.AU9999_REFERENCE_URL) {
+    references.push({
+      id: 'AU9999_REFERENCE',
+      label: 'AU9999 参考价',
+      url: process.env.AU9999_REFERENCE_URL,
+      jsonPath: process.env.AU9999_REFERENCE_JSON_PATH,
+      unit: '元/克',
+    })
+  }
+  if (process.env.ACCUMULATION_GOLD_REFERENCE_URLS) {
+    try {
+      const parsed = JSON.parse(process.env.ACCUMULATION_GOLD_REFERENCE_URLS) as ConfiguredDomesticReference[]
+      references.push(...parsed.filter((item) => typeof item.url === 'string'))
+    } catch {
+      // Optional feeds are best-effort; malformed config simply yields no extra quote.
+    }
+  }
+  return references
+}
+
+function extractConfiguredReferenceValue(text: string, jsonPath: string | undefined) {
+  if (jsonPath) {
+    try {
+      const parsed = JSON.parse(stripJsonPrefix(text))
+      return normalizeNumber(readJsonPath(parsed, jsonPath))
+    } catch {
+      return null
+    }
+  }
+
+  const match = text.match(/(?:price|value|latest|last|当前价|最新价)["'\s:=：]+([0-9]+(?:\.[0-9]+)?)/i)
+    ?? text.match(/([0-9]{2,4}(?:\.[0-9]+)?)/)
+  return normalizeNumber(match?.[1])
+}
+
+function parseZheshangAccumulationGold(text: string, jsonPath: string | undefined) {
+  if (jsonPath) {
+    const value = extractConfiguredReferenceValue(text, jsonPath)
+    if (value === null || value <= 0) {
+      throw new Error('浙商积存金 JSON 路径未解析到有效价格')
+    }
+    return { price: value, previousClose: null, updatedAt: null }
+  }
+
+  const price = normalizeNumber(
+    text.match(/(?:最新价格|最新价|price|latest)["'\s:=：]*([0-9]+(?:\.[0-9]+)?)/i)?.[1]
+      ?? text.match(/([0-9]{3,4}(?:\.[0-9]+)?)\s*元/)?.[1],
+  )
+  if (price === null || price <= 0) {
+    throw new Error('浙商积存金未解析到有效价格')
+  }
+
+  const previousClose = normalizeNumber(
+    text.match(/(?:前收盘价|昨收|previousClose)["'\s:=：]*([0-9]+(?:\.[0-9]+)?)/i)?.[1],
+  )
+  const updatedAtText = text.match(/(?:更新时间|updatedAt)["'\s:=：]*(\d{4}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{1,2}:\d{1,2})/i)?.[1]
+  return {
+    price,
+    previousClose,
+    updatedAt: updatedAtText ? normalizeChinaDateTime(updatedAtText) : null,
+  }
+}
+
+function normalizeChinaDateTime(value: string) {
+  const match = value.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{1,2}):(\d{1,2})/)
+  if (!match) {
+    return null
+  }
+  const [, year, month, day, hour, minute, second] = match
+  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${hour.padStart(2, '0')}:${minute.padStart(2, '0')}:${second.padStart(2, '0')}+08:00`
+}
+
+function readJsonPath(value: unknown, jsonPath: string) {
+  return jsonPath.split('.').reduce<unknown>((current, key) => {
+    if (current && typeof current === 'object' && key in current) {
+      return (current as Record<string, unknown>)[key]
+    }
+    return undefined
+  }, value)
 }
 
 function extractCotNetPosition(row: CsvRow) {
