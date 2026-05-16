@@ -3781,8 +3781,8 @@ function addExtremePriceLines(
       color: '#dc2626',
       lineWidth: 1,
       lineStyle: LineStyle.Dashed,
-      axisLabelVisible: true,
-      title: '窗口高点',
+      axisLabelVisible: false,
+      title: '',
     })
   }
 
@@ -3792,8 +3792,8 @@ function addExtremePriceLines(
       color: '#078466',
       lineWidth: 1,
       lineStyle: LineStyle.Dashed,
-      axisLabelVisible: true,
-      title: '窗口低点',
+      axisLabelVisible: false,
+      title: '',
     })
   }
 }
@@ -3818,8 +3818,8 @@ function addPatternPriceLines(
         color: '#7c3aed',
         lineWidth: 1,
         lineStyle: LineStyle.LargeDashed,
-        axisLabelVisible: true,
-        title: `${pattern.label}颈线`,
+        axisLabelVisible: false,
+        title: '',
       })
     }
     if (pattern.invalidationPrice !== null) {
@@ -3828,8 +3828,8 @@ function addPatternPriceLines(
         color: pattern.direction === 'bullish' ? '#078466' : '#dc2626',
         lineWidth: 1,
         lineStyle: LineStyle.SparseDotted,
-        axisLabelVisible: true,
-        title: `${pattern.label}失效`,
+        axisLabelVisible: false,
+        title: '',
       })
     }
   }
@@ -3849,25 +3849,45 @@ function addForecastPriceLines(
   forecast: ChartForecast,
 ) {
   const lines = [
-    { price: forecast.intervalHigh, color: '#1f5eff', title: '预测上沿', style: LineStyle.Dotted },
-    { price: forecast.intervalLow, color: '#1f5eff', title: '预测下沿', style: LineStyle.Dotted },
-    { price: forecast.support, color: '#078466', title: '关键支撑', style: LineStyle.SparseDotted },
-    { price: forecast.failurePrice, color: '#dc2626', title: '形态/计划失效', style: LineStyle.LargeDashed },
-  ]
+    { price: forecast.failurePrice, color: '#dc2626', title: '失效', style: LineStyle.LargeDashed, priority: 1 },
+    { price: forecast.support, color: '#078466', title: '支撑', style: LineStyle.SparseDotted, priority: 2 },
+    { price: forecast.intervalHigh, color: '#1f5eff', title: '上沿', style: LineStyle.Dotted, priority: 3 },
+    { price: forecast.intervalLow, color: '#1f5eff', title: '下沿', style: LineStyle.Dotted, priority: 4 },
+  ].filter((line): line is {
+    price: number
+    color: string
+    title: string
+    style: LineStyle
+    priority: number
+  } => line.price !== null && Number.isFinite(line.price))
+    .sort((left, right) => left.priority - right.priority)
+
+  const visiblePrices: number[] = []
+  const minVisibleGap = calculatePriceLineLabelGap(lines.map((line) => line.price))
 
   for (const line of lines) {
-    if (line.price === null || !Number.isFinite(line.price)) {
-      continue
+    const labelVisible = visiblePrices.every((price) => Math.abs(price - line.price) >= minVisibleGap)
+    if (labelVisible) {
+      visiblePrices.push(line.price)
     }
     series.createPriceLine({
       price: line.price,
       color: line.color,
       lineWidth: 1,
       lineStyle: line.style,
-      axisLabelVisible: true,
-      title: line.title,
+      axisLabelVisible: labelVisible,
+      title: labelVisible ? line.title : '',
     })
   }
+}
+
+function calculatePriceLineLabelGap(prices: number[]) {
+  if (prices.length < 2) {
+    return 0
+  }
+  const sorted = [...prices].sort((left, right) => left - right)
+  const range = sorted[sorted.length - 1] - sorted[0]
+  return Math.max(0.45, range * 0.12)
 }
 
 function patternColor(direction: PatternSignal['direction']) {
