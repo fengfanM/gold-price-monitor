@@ -4,6 +4,7 @@ import {
   buildProbabilityMetricsFromSnapshots,
   PROBABILITY_MODEL_VERSION,
 } from './model.js'
+import { buildTripleBarrierLabel } from './triple-barrier.js'
 import type {
   BacktestMonitor,
   BacktestSnapshot,
@@ -120,37 +121,37 @@ export function buildBacktestMonitor(
   const sorted = snapshots
     .slice()
     .sort((left, right) => new Date(left.quoteTimestamp).getTime() - new Date(right.quoteTimestamp).getTime())
+  const barrierPoints = sorted.map((snapshot) => ({ timestamp: snapshot.quoteTimestamp, price: snapshot.price }))
   const allEvaluatedSamples: WalkForwardSample[] = []
-  const horizonMs = horizonMinutes * 60 * 1000
 
   for (let index = 0; index < sorted.length - 1; index += 1) {
     const current = sorted[index]
-    const currentMs = new Date(current.quoteTimestamp).getTime()
-    const futureIndex = sorted.findIndex((candidate, candidateIndex) => {
-      if (candidateIndex <= index) {
-        return false
-      }
-      return new Date(candidate.quoteTimestamp).getTime() - currentMs >= horizonMs
-    })
-    if (futureIndex < 0 || current.price <= 0) {
+    if (current.price <= 0) {
       continue
     }
 
-    const future = sorted[futureIndex]
-    const window = sorted.slice(index + 1, futureIndex + 1)
-    const minPrice = window.reduce((min, item) => Math.min(min, item.price), current.price)
-    const maxPrice = window.reduce((max, item) => Math.max(max, item.price), current.price)
+    const barrierLabel = buildTripleBarrierLabel(barrierPoints, index, {
+      horizonMinutes,
+      tp1ReturnPercent: 0.01,
+      stopLossReturnPercent: -0.01,
+    })
     allEvaluatedSamples.push({
       openedAt: current.quoteTimestamp,
-      evaluatedAt: future.quoteTimestamp,
+      evaluatedAt: barrierLabel.evaluatedAt,
       signalScore: current.signalScore,
       signalLevel: current.signalLevel,
       bucketKey: buildPrimaryBucketKey(current),
       entryPrice: current.price,
-      exitPrice: future.price,
-      returnPercent: (future.price - current.price) / current.price,
-      maxDrawdown: (minPrice - current.price) / current.price,
-      maxFavorableExcursion: (maxPrice - current.price) / current.price,
+      exitPrice: barrierLabel.exitPrice,
+      returnPercent: barrierLabel.returnPercent,
+      maxDrawdown: barrierLabel.maxDrawdown,
+      maxFavorableExcursion: barrierLabel.maxFavorableExcursion,
+      barrierOutcome: barrierLabel.outcome,
+      touchedAt: barrierLabel.touchedAt,
+      tp1Price: barrierLabel.tp1Price,
+      stopLossPrice: barrierLabel.stopLossPrice,
+      barsObserved: barrierLabel.barsObserved,
+      complete: barrierLabel.complete,
     })
   }
 
@@ -184,7 +185,7 @@ export function buildBacktestMonitor(
     .filter((sample) => sample.returnPercent < 0 || sample.maxDrawdown <= -0.01)
     .sort((left, right) => left.returnPercent - right.returnPercent)
     .slice(0, 8)
-  const buckets = buildBacktestBuckets(sorted, horizonMs, signalThreshold)
+  const buckets = buildBacktestBuckets(sorted, horizonMinutes, signalThreshold)
   const probabilityMetrics = buildProbabilityMetricsFromSnapshots(sorted)
   const externalModel = buildExternalModelBacktestMonitor(sorted, horizonMinutes)
 
@@ -280,27 +281,21 @@ function buildExternalModelBuckets(
   defaultHorizonMinutes: number,
 ): ExternalModelBacktestBucket[] {
   const buckets = new Map<string, ExternalModelSample[]>()
+  const barrierPoints = snapshots.map((snapshot) => ({ timestamp: snapshot.quoteTimestamp, price: snapshot.price }))
   for (let index = 0; index < snapshots.length - 1; index += 1) {
     const current = snapshots[index]
     const horizonMinutes = current.externalModelHorizonMinutes ?? defaultHorizonMinutes
-    const horizonMs = horizonMinutes * 60 * 1000
-    const currentMs = new Date(current.quoteTimestamp).getTime()
-    const futureIndex = snapshots.findIndex((candidate, candidateIndex) => {
-      if (candidateIndex <= index) {
-        return false
-      }
-      return new Date(candidate.quoteTimestamp).getTime() - currentMs >= horizonMs
-    })
-    if (futureIndex < 0 || current.price <= 0) {
+    if (current.price <= 0) {
       continue
     }
 
-    const future = snapshots[futureIndex]
-    const window = snapshots.slice(index + 1, futureIndex + 1)
-    const minPrice = window.reduce((min, item) => Math.min(min, item.price), current.price)
-    const maxPrice = window.reduce((max, item) => Math.max(max, item.price), current.price)
     for (const candidate of getExternalModelCandidates(current)) {
       const candidateHorizonMinutes = candidate.horizonMinutes ?? horizonMinutes
+      const barrierLabel = buildTripleBarrierLabel(barrierPoints, index, {
+        horizonMinutes: candidateHorizonMinutes,
+        tp1ReturnPercent: 0.01,
+        stopLossReturnPercent: -0.01,
+      })
       const modelProbability = normalizeProbability(candidate.upProbability)
       const modelLive = candidate.status === 'live' && modelProbability !== null
       const candidateSnapshot = {
@@ -315,15 +310,21 @@ function buildExternalModelBuckets(
       }
       const sample: ExternalModelSample = {
         openedAt: current.quoteTimestamp,
-        evaluatedAt: future.quoteTimestamp,
+        evaluatedAt: barrierLabel.evaluatedAt,
         signalScore: current.signalScore,
         signalLevel: current.signalLevel,
         bucketKey: undefined,
         entryPrice: current.price,
-        exitPrice: future.price,
-        returnPercent: (future.price - current.price) / current.price,
-        maxDrawdown: (minPrice - current.price) / current.price,
-        maxFavorableExcursion: (maxPrice - current.price) / current.price,
+        exitPrice: barrierLabel.exitPrice,
+        returnPercent: barrierLabel.returnPercent,
+        maxDrawdown: barrierLabel.maxDrawdown,
+        maxFavorableExcursion: barrierLabel.maxFavorableExcursion,
+        barrierOutcome: barrierLabel.outcome,
+        touchedAt: barrierLabel.touchedAt,
+        tp1Price: barrierLabel.tp1Price,
+        stopLossPrice: barrierLabel.stopLossPrice,
+        barsObserved: barrierLabel.barsObserved,
+        complete: barrierLabel.complete,
         baseline: !modelLive,
         modelLive,
         modelProbability,
@@ -829,38 +830,39 @@ function extractHorizonMinutes(samples: ExternalModelSample[], key: string) {
 
 function buildBacktestBuckets(
   snapshots: BacktestSnapshot[],
-  horizonMs: number,
+  horizonMinutes: number,
   signalThreshold: number,
 ): BacktestBucket[] {
   const buckets = new Map<string, Array<WalkForwardSample & { baseline: boolean }>>()
+  const barrierPoints = snapshots.map((snapshot) => ({ timestamp: snapshot.quoteTimestamp, price: snapshot.price }))
   for (let index = 0; index < snapshots.length - 1; index += 1) {
     const current = snapshots[index]
-    const currentMs = new Date(current.quoteTimestamp).getTime()
-    const futureIndex = snapshots.findIndex((candidate, candidateIndex) => {
-      if (candidateIndex <= index) {
-        return false
-      }
-      return new Date(candidate.quoteTimestamp).getTime() - currentMs >= horizonMs
-    })
-    if (futureIndex < 0 || current.price <= 0) {
+    if (current.price <= 0) {
       continue
     }
 
-    const future = snapshots[futureIndex]
-    const window = snapshots.slice(index + 1, futureIndex + 1)
-    const minPrice = window.reduce((min, item) => Math.min(min, item.price), current.price)
-    const maxPrice = window.reduce((max, item) => Math.max(max, item.price), current.price)
+    const barrierLabel = buildTripleBarrierLabel(barrierPoints, index, {
+      horizonMinutes,
+      tp1ReturnPercent: 0.01,
+      stopLossReturnPercent: -0.01,
+    })
     const sample: WalkForwardSample & { baseline: boolean } = {
       openedAt: current.quoteTimestamp,
-      evaluatedAt: future.quoteTimestamp,
+      evaluatedAt: barrierLabel.evaluatedAt,
       signalScore: current.signalScore,
       signalLevel: current.signalLevel,
       bucketKey: buildPrimaryBucketKey(current),
       entryPrice: current.price,
-      exitPrice: future.price,
-      returnPercent: (future.price - current.price) / current.price,
-      maxDrawdown: (minPrice - current.price) / current.price,
-      maxFavorableExcursion: (maxPrice - current.price) / current.price,
+      exitPrice: barrierLabel.exitPrice,
+      returnPercent: barrierLabel.returnPercent,
+      maxDrawdown: barrierLabel.maxDrawdown,
+      maxFavorableExcursion: barrierLabel.maxFavorableExcursion,
+      barrierOutcome: barrierLabel.outcome,
+      touchedAt: barrierLabel.touchedAt,
+      tp1Price: barrierLabel.tp1Price,
+      stopLossPrice: barrierLabel.stopLossPrice,
+      barsObserved: barrierLabel.barsObserved,
+      complete: barrierLabel.complete,
       baseline: current.signalScore < signalThreshold && current.signalLevel === 'none',
     }
 
@@ -949,6 +951,10 @@ function summarizeBucket(
   const mfe = qualified.length > 0
     ? average(qualified.map((sample) => sample.maxFavorableExcursion ?? 0))
     : null
+  const tp1HitRate = outcomeRate(qualified, 'tp1_hit')
+  const stopLossHitRate = outcomeRate(qualified, 'stop_loss_hit')
+  const noTouchRate = outcomeRate(qualified, 'no_touch')
+  const timeoutRate = outcomeRate(qualified, 'timeout')
   const reliability = calculateReliability(qualified.length, winRate, profitFactor)
   const label = bucketLabelFromKey(key)
   return {
@@ -964,9 +970,20 @@ function summarizeBucket(
     maxDrawdown,
     mae,
     mfe,
+    tp1HitRate,
+    stopLossHitRate,
+    noTouchRate,
+    timeoutRate,
     reliability,
-    summary: `${label}：合格 ${qualified.length}/${samples.length}，胜率 ${formatPercent(winRate)}，基准 ${formatPercent(baselineWinRate)}，PF ${formatRatio(profitFactor)}，MAE ${formatPercent(mae)}，MFE ${formatPercent(mfe)}。`,
+    summary: `${label}：合格 ${qualified.length}/${samples.length}，TP1 ${formatPercent(tp1HitRate)}，止损 ${formatPercent(stopLossHitRate)}，超时 ${formatPercent(timeoutRate)}，PF ${formatRatio(profitFactor)}，MAE ${formatPercent(mae)}，MFE ${formatPercent(mfe)}。`,
   }
+}
+
+function outcomeRate(samples: WalkForwardSample[], outcome: NonNullable<WalkForwardSample['barrierOutcome']>) {
+  if (samples.length === 0) {
+    return null
+  }
+  return samples.filter((sample) => sample.barrierOutcome === outcome).length / samples.length
 }
 
 function buildPrimaryBucketKey(snapshot: BacktestSnapshot) {

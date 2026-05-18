@@ -1,0 +1,9 @@
+title,theme,legal_locator,allowed_use,forbidden_use,model_mapping
+"Technical Analysis of the Financial Markets","technical analysis","Publisher/bookstore/library catalog","public metadata, owned copy notes, chapter-level lawful summary","pirated PDF or copied full text","trendStructureScore; supportResistanceQuality"
+"Japanese Candlestick Charting Techniques","candlestick patterns","Publisher/bookstore/library catalog","public metadata, owned copy notes, pattern taxonomy summary","pirated PDF or copied full text","candidate candlestick rules; confirmation gate"
+"Trading for a Living","trading psychology and risk","Publisher/bookstore/library catalog","public metadata, author interviews, lawful summary","pirated PDF or copied full text","psychology discipline; position sizing"
+"Reminiscences of a Stock Operator","trend and speculation psychology","Publisher/bookstore/library catalog or public-domain status by jurisdiction check","lawful editions and summary","uncleared scans","anti-chasing; patience gate"
+"Trend Following","trend systems","Publisher/bookstore/library catalog","public metadata and lawful summary","pirated PDF or copied full text","trend regime and trailing stop logic"
+"The Complete TurtleTrader / Turtle rules public materials","systematic trend trading","Publisher/bookstore/library catalog plus authorized public rule discussions","high-level system design notes","pirated PDF or copied full text","breakout quality; ATR-like risk sizing"
+"Principles for Navigating Big Debt Crises","macro cycle","https://www.bridgewater.com/research-and-insights/the-big-debt-crises","official page and lawful summary","unauthorized redistribution if terms restrict","macro regime context"
+

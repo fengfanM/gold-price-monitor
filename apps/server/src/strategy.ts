@@ -1,5 +1,6 @@
 import { buildTechnicalSnapshot, type TechnicalSnapshot } from './technicals.js'
 import { buildEconomicEventRisk } from './event-risk.js'
+import { buildKnowledgeRuleAudit } from './knowledge-rules.js'
 import {
   extractProbabilityFeatures,
   predictProbabilityModel,
@@ -13,6 +14,7 @@ import type {
   FinalDecision,
   FinalDecisionGate,
   HistoryPoint,
+  KnowledgeRuleAudit,
   MarketContext,
   MultiTimeframeConfluence,
   OpportunitySignal,
@@ -88,6 +90,17 @@ export function evaluateOpportunity(input: {
       patternSignals,
       confluence,
     }),
+  })
+  const preTradeKnowledgeRuleAudit = buildKnowledgeRuleAudit({
+    history,
+    latestQuote,
+    stats,
+    technicals,
+    marketContext,
+    patternSignals,
+    confluence,
+    eventRisk,
+    valuation,
   })
 
   const rangeSpan = stats.high24h - stats.low24h
@@ -235,6 +248,19 @@ export function evaluateOpportunity(input: {
     risks.push(warning)
   }
 
+  score += preTradeKnowledgeRuleAudit.scoreAdjustment
+  scoreCap = Math.min(scoreCap, preTradeKnowledgeRuleAudit.scoreCap)
+  for (const reason of preTradeKnowledgeRuleAudit.supportingReasons.slice(0, 2)) {
+    reasons.push(reason)
+  }
+  for (const risk of [
+    ...preTradeKnowledgeRuleAudit.opposingReasons,
+    ...preTradeKnowledgeRuleAudit.missingConfirmations.slice(0, 2),
+    ...preTradeKnowledgeRuleAudit.invalidationWarnings.slice(0, 2),
+  ]) {
+    risks.push(risk)
+  }
+
   risks.push('该信号仅用于行情观察，不构成投资建议、收益承诺或买入指令。')
 
   const ruleCappedScore = Math.round(clamp(Math.min(score, scoreCap), 0, 100))
@@ -286,6 +312,18 @@ export function evaluateOpportunity(input: {
       ? 68
       : 100
   const finalScore = Math.round(clamp(Math.min(prePlanScore, planScoreCap, psychologyScoreCap), 0, 100))
+  const knowledgeRuleAudit = buildKnowledgeRuleAudit({
+    history,
+    latestQuote,
+    stats,
+    technicals,
+    marketContext,
+    patternSignals,
+    confluence,
+    eventRisk,
+    valuation,
+    tradePlan,
+  })
   const finalDecision = buildFinalDecision({
     confluence,
     eventRisk,
@@ -296,6 +334,7 @@ export function evaluateOpportunity(input: {
     patternSignals,
     probabilityModel,
     psychology,
+    knowledgeRuleAudit,
     sourceStatus,
     tradePlan,
   })
@@ -329,6 +368,7 @@ export function evaluateOpportunity(input: {
     valuation,
     patternSignals,
     probabilityModel,
+    knowledgeRuleAudit,
     finalDecision,
     tradePlan,
     confluence,
@@ -1012,6 +1052,7 @@ function buildFinalDecision(input: {
   externalModelAdvisor: ExternalModelAdvisor | null
   finalScore: number
   latestQuote: QuoteSample
+  knowledgeRuleAudit: KnowledgeRuleAudit
   marketContext: MarketContext
   patternSignals: PatternSignal[]
   probabilityModel: OpportunitySignal['probabilityModel']
@@ -1025,6 +1066,7 @@ function buildFinalDecision(input: {
     externalModelAdvisor,
     finalScore,
     latestQuote,
+    knowledgeRuleAudit,
     marketContext,
     patternSignals,
     probabilityModel,
@@ -1257,8 +1299,9 @@ function buildFinalDecision(input: {
                 label: '模型军师',
                 status: 'pass',
                 reason: externalGate.summary,
-              },
+            },
   ]
+  hardGates.push(...buildKnowledgeRuleGates(knowledgeRuleAudit))
 
   const blockedReasons = hardGates.filter((gate) => gate.status === 'block').map((gate) => `${gate.label}：${gate.reason}`)
   const downgradeReasons = hardGates.filter((gate) => gate.status === 'watch').map((gate) => `${gate.label}：${gate.reason}`)
@@ -1295,6 +1338,33 @@ function buildFinalDecision(input: {
     accuracyExplanation: buildAccuracyExplanation(sampleStatus, hardGates, prediction),
     sampleStatus,
   }
+}
+
+function buildKnowledgeRuleGates(audit: KnowledgeRuleAudit): FinalDecisionGate[] {
+  const blocked = audit.checks.filter((check) => check.status === 'block')
+  const watch = audit.checks.filter((check) => check.status === 'watch')
+  if (blocked.length > 0) {
+    return [{
+      id: 'kb:rule-pack',
+      label: '知识库规则',
+      status: 'block',
+      reason: `${blocked[0].label}：${blocked[0].reason}`,
+    }]
+  }
+  if (watch.length > 0) {
+    return [{
+      id: 'kb:rule-pack',
+      label: '知识库规则',
+      status: 'watch',
+      reason: `${watch[0].label}：${watch[0].reason}`,
+    }]
+  }
+  return [{
+    id: 'kb:rule-pack',
+    label: '知识库规则',
+    status: 'pass',
+    reason: audit.summary,
+  }]
 }
 
 function getDecisionSampleStatus(sampleSize: number): FinalDecision['sampleStatus'] {

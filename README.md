@@ -29,8 +29,9 @@ Gold Price Monitor 的目标就是把这些问题变成一套清晰、可复盘�
 | --- | --- | --- |
 | 主行情 | 工银积存金主报价，官方异步接口优先，公开页面 fallback | 周末和非交易时段不更新正常；工作日必须看 freshness |
 | 多源校准 | 上金所 / AU9999、金投网、浙商积存金、国际金、汇率和宏观源框架 | 不同源有延迟和口径差异，不能粗暴平均 |
-| 本地概率模型 | `rules-calibrated-logit-v1`，输出 `5m / 15m / 60m / 240m` 上涨概率 | 这是规则校准 logit，不是深度学习训练模型 |
+| 本地概率模型 | `rules-calibrated-logit-triple-barrier-v1`，输出 `5m / 15m / 60m / 240m` TP1 先达概率 | 这是规则校准 logit + 路径标签，不是深度学习训练模型 |
 | 买点评分 | 技术、形态、估值、宏观、事件、心理纪律、交易计划和回测共同影响分数与上限 | 分数不是买入指令 |
+| 知识库规则包 | `gold-kb-rule-pack-v1`，审校趋势结构、形态位置、假突破、事件阶段和赔率纪律 | 规则包用于拦截误判，不保证 100% 正确 |
 | 外部军师 | `EXTERNAL_TS_MODEL_URL` / `EXTERNAL_TS_MODEL_ENDPOINTS` HTTP 接口，支持多 provider schema | 接口支持不等于所有 provider 已生产稳定运行 |
 | Chronos-Bolt | 可选本地 Chronos-Bolt 推理服务，已做过真实模型联调 | 当前不能宣传为已验证高准确率交易模型 |
 | 回测 gate | 策略桶和外部模型桶，统计胜率、超额胜率、PF、Brier、MAE、回撤 | historical 不能直接污染 live gate |
@@ -67,7 +68,7 @@ Gold Price Monitor 的目标就是把这些问题变成一套清晰、可复盘�
 
 ### Local Probability Model
 
-当前本地概率模型是 `rules-calibrated-logit-v1`，不是黑盒神经网络。它从当前行情提取特征，并输出不同窗口的上涨概率。
+当前本地概率模型是 `rules-calibrated-logit-triple-barrier-v1`，不是黑盒神经网络。它从当前行情提取特征，并输出不同窗口的 **TP1 先达概率**：也就是在给定时间窗内，价格是否先触及目标收益而不是先触及止损。
 
 | Feature family | Examples |
 | --- | --- |
@@ -77,6 +78,19 @@ Gold Price Monitor 的目标就是把这些问题变成一套清晰、可复盘�
 | Cross-market | AU9999 锚点、国内参考价、国际金、人民币汇率 |
 | Macro | 美元指数、实际利率、通胀预期、VIX、ETF、COT、央行购金 |
 | Risk | 数据质量、事件窗口、多周期冲突、心理纪律 |
+| Knowledge Rules | 趋势结构、形态位置、假突破风险、回撤质量、支撑阻力质量、宏观顺逆风 |
+
+### Knowledge Rule Pack
+
+`gold-kb-rule-pack-v1` 把知识库里的交易原则变成可审计 gate。它不会“替用户下单”，而是专门防止常见误判：候选双底没确认就追、箱体中位硬买、事件第一波冲动追单、假突破高位接力、赔率不足还强提醒。
+
+| Rule | What it checks | If it fails |
+| --- | --- | --- |
+| `kb:trend-structure` | 均线、MACD、短线结构和多周期方向 | 趋势未确认时降级 |
+| `kb:pattern-location` | 形态是否确认、是否在高位或箱体中位 | 候选形态只允许观察 |
+| `kb:false-breakout` | 高位、波动扩张、未回踩确认 | 高风险时阻止强提醒 |
+| `kb:event-phase` | CPI/FOMC/非农等事件阶段 | 事件第一波不追单 |
+| `kb:risk-reward-discipline` | 交易计划赔率是否至少 2:1 | 赔率不足时拦截 |
 
 ### External Advisor Model
 
@@ -174,6 +188,19 @@ EXTERNAL_TS_MODEL_CONTEXT_POINTS=256
 | `MAE/MFE` | 判断入场后最大不利/有利波动 |
 | `maxDrawdown` | 判断最坏路径风险 |
 | `sourceHealth` | 判断数据源故障是否污染信号 |
+
+### Triple-Barrier Labels
+
+回测现在不再只问“未来某个点涨没涨”，而是记录真实交易路径：
+
+| Outcome | Meaning |
+| --- | --- |
+| `tp1_hit` | 先触及 TP1，记为正样本 |
+| `stop_loss_hit` | 先触及止损，记为失败样本 |
+| `no_touch` | 时间窗结束仍未触及 TP1 或止损 |
+| `timeout` | 数据路径不足，不能完整评价 |
+
+这让“胜率”更接近真实交易体验：同样是最终上涨，如果中途先打止损，就不能算成功。
 
 ### Historical, Paper, Live and Production Separation
 

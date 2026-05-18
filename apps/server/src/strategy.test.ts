@@ -34,6 +34,8 @@ describe('opportunity strategy engine', () => {
     assert.equal(signal.reasons.some((item) => item.includes('RSI14')), true)
     assert.equal(signal.reasons.some((item) => item.includes('MACD')), true)
     assert.equal(signal.probabilityModel.primaryPrediction.horizonMinutes, 60)
+    assert.equal(signal.knowledgeRuleAudit.version, 'gold-kb-rule-pack-v1')
+    assert.equal(signal.finalDecision.hardGates.some((gate) => gate.id === 'kb:rule-pack'), true)
     assert.equal(signal.risks.some((item) => item.includes('概率模型')), true)
     assert.equal(signal.expertOpinions.length, 5)
     assert.equal(signal.expertConsensus.bullishCount > 0, true)

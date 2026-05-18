@@ -126,6 +126,12 @@ export type ProbabilityTrainingLabel = {
   returnPercent: number
   maxDrawdown: number
   maxFavorableExcursion: number
+  barrierOutcome?: BarrierOutcome
+  touchedAt?: string | null
+  tp1Price?: number | null
+  stopLossPrice?: number | null
+  barsObserved?: number
+  complete?: boolean
   positive: boolean
 }
 
@@ -327,6 +333,32 @@ export type WalkForwardSample = {
   returnPercent: number
   maxDrawdown: number
   maxFavorableExcursion?: number
+  barrierOutcome?: BarrierOutcome
+  touchedAt?: string | null
+  tp1Price?: number | null
+  stopLossPrice?: number | null
+  barsObserved?: number
+  complete?: boolean
+}
+
+export type BarrierOutcome = 'tp1_hit' | 'stop_loss_hit' | 'no_touch' | 'timeout'
+
+export type TripleBarrierLabel = {
+  horizonMinutes: number
+  outcome: BarrierOutcome
+  openedAt: string
+  evaluatedAt: string
+  touchedAt: string | null
+  entryPrice: number
+  exitPrice: number
+  returnPercent: number
+  maxDrawdown: number
+  maxFavorableExcursion: number
+  tp1Price: number
+  stopLossPrice: number
+  barsObserved: number
+  complete: boolean
+  positive: boolean
 }
 
 export type BacktestBucket = {
@@ -342,6 +374,10 @@ export type BacktestBucket = {
   maxDrawdown: number | null
   mae: number | null
   mfe: number | null
+  tp1HitRate?: number | null
+  stopLossHitRate?: number | null
+  noTouchRate?: number | null
+  timeoutRate?: number | null
   reliability: number
   summary: string
 }
@@ -457,6 +493,29 @@ export type PatternSignal = {
   expectedConfirmationBars: number
   summary: string
   explanation: string
+}
+
+export type KnowledgeRuleStatus = 'pass' | 'watch' | 'block'
+
+export type KnowledgeRuleCheck = {
+  id: string
+  label: string
+  status: KnowledgeRuleStatus
+  reason: string
+  impactScore: number
+}
+
+export type KnowledgeRuleAudit = {
+  version: string
+  scoreAdjustment: number
+  scoreCap: number
+  checks: KnowledgeRuleCheck[]
+  supportingReasons: string[]
+  opposingReasons: string[]
+  missingConfirmations: string[]
+  invalidationWarnings: string[]
+  features: Record<string, number | null>
+  summary: string
 }
 
 export type TradePlanAction =
@@ -667,6 +726,7 @@ export type OpportunitySignal = {
   valuation: ValuationMetrics
   patternSignals: PatternSignal[]
   probabilityModel: ProbabilityModelSnapshot
+  knowledgeRuleAudit: KnowledgeRuleAudit
   finalDecision: FinalDecision
   tradePlan: TradePlan
   confluence: MultiTimeframeConfluence

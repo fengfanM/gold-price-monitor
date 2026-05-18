@@ -1,0 +1,281 @@
+import type { TechnicalSnapshot } from './technicals.js'
+import type {
+  EconomicEventRisk,
+  HistoryPoint,
+  KnowledgeRuleAudit,
+  KnowledgeRuleCheck,
+  MarketContext,
+  MultiTimeframeConfluence,
+  PatternSignal,
+  QuoteSample,
+  QuoteStats24h,
+  TradePlan,
+  ValuationMetrics,
+} from './types.js'
+
+export const KNOWLEDGE_RULE_PACK_VERSION = 'gold-kb-rule-pack-v1'
+
+export function buildKnowledgeRuleAudit(input: {
+  history: HistoryPoint[]
+  latestQuote: QuoteSample
+  stats: QuoteStats24h
+  technicals: TechnicalSnapshot
+  marketContext: MarketContext
+  patternSignals: PatternSignal[]
+  confluence: MultiTimeframeConfluence
+  eventRisk: EconomicEventRisk
+  valuation?: ValuationMetrics
+  tradePlan?: TradePlan
+}): KnowledgeRuleAudit {
+  const features = buildKnowledgeFeatureValues(input)
+  const confirmedBullish = input.patternSignals.some((pattern) => pattern.direction === 'bullish' && isConfirmedPattern(pattern))
+  const candidateBullish = input.patternSignals.some((pattern) => pattern.direction === 'bullish' && !isConfirmedPattern(pattern))
+  const nearRangeMiddle = features.rangePosition !== null && features.rangePosition > 0.38 && features.rangePosition < 0.66
+  const nearHigh = features.rangePosition !== null && features.rangePosition >= 0.72
+  const eventBlocked = input.eventRisk.level === 'critical' || input.eventRisk.level === 'elevated'
+  const tradePlan = input.tradePlan
+
+  const checks: KnowledgeRuleCheck[] = [
+    buildCheck({
+      id: 'kb:trend-structure',
+      label: '知识库趋势结构',
+      status: features.trendStructureScore !== null && features.trendStructureScore >= 0.35
+        ? 'pass'
+        : features.trendStructureScore !== null && features.trendStructureScore <= -0.2
+          ? 'block'
+          : 'watch',
+      reason: features.trendStructureScore !== null && features.trendStructureScore >= 0.35
+        ? '短线结构与均线/动量方向相对友好。'
+        : features.trendStructureScore !== null && features.trendStructureScore <= -0.2
+          ? '短线趋势结构仍偏弱，不能把反弹直接当成反转。'
+          : '趋势结构仍未完成二次确认。',
+      impactScore: features.trendStructureScore !== null ? Math.round(features.trendStructureScore * 4) : 0,
+    }),
+    buildCheck({
+      id: 'kb:pattern-location',
+      label: '知识库形态位置',
+      status: confirmedBullish && !nearHigh
+        ? 'pass'
+        : candidateBullish || nearRangeMiddle
+          ? 'watch'
+          : nearHigh
+            ? 'block'
+            : 'watch',
+      reason: confirmedBullish && !nearHigh
+        ? '看多形态已确认且未处在日内高位追单区。'
+        : nearHigh
+          ? '价格处在日内高位区，知识库禁止把上涨末端当买点。'
+          : candidateBullish
+            ? '存在看多候选形态，但尚未完成关键位确认。'
+            : '暂无清晰低位形态位置优势。',
+      impactScore: confirmedBullish && !nearHigh ? 3 : nearHigh ? -4 : 0,
+    }),
+    buildCheck({
+      id: 'kb:false-breakout',
+      label: '知识库假突破过滤',
+      status: features.breakoutFailureRisk !== null && features.breakoutFailureRisk >= 0.65
+        ? 'block'
+        : features.breakoutFailureRisk !== null && features.breakoutFailureRisk >= 0.35
+          ? 'watch'
+          : 'pass',
+      reason: features.breakoutFailureRisk !== null && features.breakoutFailureRisk >= 0.65
+        ? '出现高位、长波动或候选形态未确认组合，假突破风险高。'
+        : features.breakoutFailureRisk !== null && features.breakoutFailureRisk >= 0.35
+          ? '突破/反弹质量仍需回踩确认。'
+          : '当前未触发明显假突破过滤器。',
+      impactScore: features.breakoutFailureRisk === null ? 0 : -Math.round(features.breakoutFailureRisk * 5),
+    }),
+    buildCheck({
+      id: 'kb:event-phase',
+      label: '知识库事件分层',
+      status: eventBlocked ? 'block' : input.eventRisk.level === 'watch' ? 'watch' : 'pass',
+      reason: eventBlocked
+        ? `事件风险处于 ${input.eventRisk.level}，禁止追单型强提醒。`
+        : input.eventRisk.level === 'watch'
+          ? '事件观察窗口内只能等待二次确认。'
+          : '未处于重大事件第一波冲击窗口。',
+      impactScore: eventBlocked ? -8 : input.eventRisk.level === 'watch' ? -3 : 1,
+    }),
+    buildCheck({
+      id: 'kb:risk-reward-discipline',
+      label: '知识库赔率纪律',
+      status: !tradePlan
+        ? 'watch'
+        : tradePlan.riskRewardRatio !== null && tradePlan.riskRewardRatio >= 2.5
+          ? 'pass'
+          : tradePlan.riskRewardRatio !== null && tradePlan.riskRewardRatio >= 2
+            ? 'watch'
+            : 'block',
+      reason: !tradePlan
+        ? '交易计划尚未生成，暂不能验证赔率纪律。'
+        : tradePlan.riskRewardRatio !== null && tradePlan.riskRewardRatio >= 2.5
+          ? `风险收益比 ${tradePlan.riskRewardRatio}:1，满足知识库强提醒要求。`
+          : tradePlan.riskRewardRatio !== null && tradePlan.riskRewardRatio >= 2
+            ? `风险收益比 ${tradePlan.riskRewardRatio}:1，只能观察或轻仓。`
+            : '风险收益比不足 2:1，知识库禁止强提醒。',
+      impactScore: !tradePlan ? 0 : tradePlan.riskRewardRatio !== null && tradePlan.riskRewardRatio >= 2.5 ? 2 : -4,
+    }),
+  ]
+
+  const scoreAdjustment = clamp(
+    checks.reduce((sum, check) => sum + check.impactScore, 0),
+    -10,
+    8,
+  )
+  const scoreCap = checks.some((check) => check.status === 'block')
+    ? 58
+    : checks.some((check) => check.status === 'watch')
+      ? 72
+      : 100
+  const supportingReasons = checks.filter((check) => check.status === 'pass').map((check) => `${check.label}：${check.reason}`)
+  const opposingReasons = checks.filter((check) => check.status === 'block').map((check) => `${check.label}：${check.reason}`)
+  const missingConfirmations = checks.filter((check) => check.status === 'watch').map((check) => `${check.label}：${check.reason}`)
+  const invalidationWarnings = compact([
+    candidateBullish ? '候选看多形态未确认，必须等待颈线/触发价或回踩成功。' : null,
+    nearRangeMiddle ? '价格处于区间中部，知识库不允许把中位震荡当强买点。' : null,
+    nearHigh ? '高位追单风险触发，若继续上冲需等待回踩不破再评估。' : null,
+  ])
+
+  return {
+    version: KNOWLEDGE_RULE_PACK_VERSION,
+    scoreAdjustment,
+    scoreCap,
+    checks,
+    supportingReasons,
+    opposingReasons,
+    missingConfirmations,
+    invalidationWarnings,
+    features,
+    summary: buildKnowledgeSummary(checks, scoreAdjustment, scoreCap),
+  }
+}
+
+export function buildKnowledgeFeatureValues(input: {
+  history: HistoryPoint[]
+  latestQuote: QuoteSample
+  stats: QuoteStats24h
+  technicals: TechnicalSnapshot
+  marketContext: MarketContext
+  patternSignals: PatternSignal[]
+  confluence?: MultiTimeframeConfluence
+}) {
+  const rangeSpan = input.stats.high24h - input.stats.low24h
+  const rangePosition = rangeSpan > 0
+    ? clamp((input.stats.currentPrice - input.stats.low24h) / rangeSpan, 0, 1)
+    : null
+  const prices = [...input.history.map((point) => point.price), input.latestQuote.price]
+    .filter((price) => Number.isFinite(price) && price > 0)
+  const recent = prices.slice(-12)
+  const prior = recent.slice(0, -1)
+  const priorHigh = prior.length > 0 ? Math.max(...prior) : input.latestQuote.price
+  const priorLow = prior.length > 0 ? Math.min(...prior) : input.latestQuote.price
+  const latest = input.latestQuote.price
+  const latestMove = prior.length > 0 ? (latest - prior[prior.length - 1]) / prior[prior.length - 1] : 0
+  const volatility = standardDeviation(buildReturns(prices))
+  const confirmedBullish = input.patternSignals.filter((pattern) => pattern.direction === 'bullish' && isConfirmedPattern(pattern)).length
+  const candidateBullish = input.patternSignals.filter((pattern) => pattern.direction === 'bullish' && !isConfirmedPattern(pattern)).length
+  const bearish = input.patternSignals.filter((pattern) => pattern.direction === 'bearish').length
+  const maAlignment = input.technicals.ma5 !== null && input.technicals.ma10 !== null && input.technicals.ma20 !== null
+    ? (input.technicals.ma5 >= input.technicals.ma10 && input.technicals.ma10 >= input.technicals.ma20 ? 1 : input.technicals.ma5 < input.technicals.ma10 && input.technicals.ma10 < input.technicals.ma20 ? -1 : 0)
+    : 0
+  const trendStructureScore = clamp(
+    maAlignment * 0.35 +
+      (input.technicals.shortTrend === 'rising' ? 0.25 : input.technicals.shortTrend === 'falling' ? -0.3 : 0) +
+      (input.technicals.macd === null ? 0 : input.technicals.macd.histogram > 0 ? 0.18 : -0.18) +
+      (input.confluence ? (input.confluence.score - 50) / 180 : 0),
+    -1,
+    1,
+  )
+  const patternLocationScore = rangePosition === null
+    ? null
+    : clamp((confirmedBullish * 0.35 + candidateBullish * 0.12 - bearish * 0.25) + (0.5 - rangePosition) * 0.9, -1, 1)
+  const breakoutFailureRisk = clamp(
+    (candidateBullish > 0 ? 0.26 : 0) +
+      (rangePosition !== null && rangePosition >= 0.72 ? 0.32 : 0) +
+      (volatility !== null && volatility > 0.004 ? 0.22 : 0) +
+      (latestMove < -0.001 ? 0.2 : 0),
+    0,
+    1,
+  )
+  const pullbackQuality = rangePosition === null
+    ? null
+    : clamp(
+        (input.stats.drawdownPercent24h >= 0.006 ? 0.25 : 0) +
+          (latest > priorLow ? 0.2 : 0) +
+          (input.technicals.ma20 !== null && latest <= input.technicals.ma20 * 1.006 ? 0.18 : 0) +
+          (rangePosition <= 0.45 ? 0.22 : -0.12),
+        -1,
+        1,
+      )
+  const supportResistanceQuality = clamp(
+    (priorHigh > priorLow ? Math.min((latest - priorLow) / Math.max(priorHigh - priorLow, latest * 0.0001), 1) : 0.5) * -0.25 +
+      (confirmedBullish > 0 ? 0.35 : 0) -
+      (bearish > 0 ? 0.3 : 0),
+    -1,
+    1,
+  )
+  const macroAlignmentScore = clamp((input.marketContext.factorScore - 50) / 50, -1, 1)
+
+  return {
+    trendStructureScore,
+    patternLocationScore,
+    breakoutFailureRisk,
+    pullbackQuality,
+    supportResistanceQuality,
+    macroAlignmentScore,
+    riskRewardDisciplineScore: null,
+    rangePosition,
+  }
+}
+
+function buildCheck(input: KnowledgeRuleCheck): KnowledgeRuleCheck {
+  return input
+}
+
+function isConfirmedPattern(pattern: PatternSignal) {
+  if (pattern.confirmationStatus) {
+    return pattern.confirmationStatus === 'confirmed'
+  }
+  return pattern.expectedConfirmationBars <= 1
+}
+
+function buildKnowledgeSummary(checks: KnowledgeRuleCheck[], scoreAdjustment: number, scoreCap: number) {
+  const blocked = checks.filter((check) => check.status === 'block').length
+  const watch = checks.filter((check) => check.status === 'watch').length
+  if (blocked > 0) {
+    return `知识库规则包拦截 ${blocked} 项，评分调整 ${scoreAdjustment}，上限 ${scoreCap}。`
+  }
+  if (watch > 0) {
+    return `知识库规则包仍有 ${watch} 项待确认，评分调整 ${scoreAdjustment}，上限 ${scoreCap}。`
+  }
+  return `知识库规则包全部通过，评分调整 ${scoreAdjustment}。`
+}
+
+function buildReturns(prices: number[]) {
+  const returns: number[] = []
+  for (let index = 1; index < prices.length; index += 1) {
+    const previous = prices[index - 1]
+    const current = prices[index]
+    if (previous > 0) {
+      returns.push((current - previous) / previous)
+    }
+  }
+  return returns
+}
+
+function standardDeviation(values: number[]) {
+  if (values.length < 2) {
+    return null
+  }
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length
+  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length
+  return Math.sqrt(variance)
+}
+
+function compact<T>(values: Array<T | null | undefined | false>) {
+  return values.filter(Boolean) as T[]
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}

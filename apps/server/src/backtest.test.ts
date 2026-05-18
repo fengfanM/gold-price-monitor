@@ -28,6 +28,7 @@ describe('selective backtest monitor', () => {
     assert.equal(monitor.reliability > 28, true)
     assert.equal(monitor.buckets.some((bucket) => bucket.dimension === 'score'), true)
     assert.equal(monitor.buckets.some((bucket) => bucket.mae !== null && bucket.mfe !== null), true)
+    assert.equal(monitor.buckets.some((bucket) => bucket.tp1HitRate !== null && bucket.stopLossHitRate !== null), true)
     assert.equal(monitor.probabilityModel.horizons.some((metric) => metric.horizonMinutes === 5), true)
     assert.equal(monitor.probabilityModel.horizons[0].calibrationBuckets.length, 5)
   })
@@ -154,6 +155,20 @@ describe('selective backtest monitor', () => {
 
     assert.equal(chronosBucket?.qualifiedSamples, 2)
     assert.equal(timesfmBucket?.qualifiedSamples, 2)
+  })
+
+  it('keeps timeout path labels in the walk-forward monitor instead of silently dropping them', () => {
+    const snapshots = [
+      makeSnapshot('2026-05-16T09:00:00.000Z', 100, 66, 'watch'),
+      makeSnapshot('2026-05-16T09:01:00.000Z', 100.2, 66, 'watch'),
+      makeSnapshot('2026-05-16T09:02:00.000Z', 100.1, 66, 'watch'),
+    ]
+
+    const monitor = buildBacktestMonitor(snapshots, 60)
+
+    assert.equal(monitor.allEvaluatedSamples, 2)
+    assert.equal(monitor.failureSamples.length >= 0, true)
+    assert.equal(monitor.buckets.some((bucket) => (bucket.timeoutRate ?? 0) > 0), true)
   })
 })
 

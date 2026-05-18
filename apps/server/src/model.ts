@@ -1,4 +1,6 @@
 import type { TechnicalSnapshot } from './technicals.js'
+import { buildKnowledgeFeatureValues } from './knowledge-rules.js'
+import { buildTripleBarrierLabel, historyPointToBarrierPoint } from './triple-barrier.js'
 import type {
   BacktestSnapshot,
   MarketContext,
@@ -16,7 +18,7 @@ import type {
   HistoryPoint,
 } from './types.js'
 
-export const PROBABILITY_MODEL_VERSION = 'rules-calibrated-logit-v1'
+export const PROBABILITY_MODEL_VERSION = 'rules-calibrated-logit-triple-barrier-v1'
 
 const DEFAULT_HORIZONS: ProbabilityHorizonMinutes[] = [5, 15, 60, 240]
 const FEATURE_VERSION = 'gold-intraday-features-v1'
@@ -69,6 +71,15 @@ export function extractProbabilityFeatures(input: {
     .filter((pattern) => pattern.direction === 'bearish')
     .slice(0, 3)
     .reduce((sum, pattern) => sum + pattern.confidence / 100, 0)
+  const knowledgeFeatures = buildKnowledgeFeatureValues({
+    history,
+    latestQuote,
+    stats,
+    technicals,
+    marketContext,
+    patternSignals,
+    confluence,
+  })
 
   const values: Record<string, number | null> = {
     rangeLowAdvantage: rangePosition === null ? null : 1 - rangePosition,
@@ -101,6 +112,12 @@ export function extractProbabilityFeatures(input: {
     confluenceSupport: confluence ? clamp((confluence.score - 50) / 50, -1, 1) : null,
     dataDepth: clamp(sorted.length / 80, 0, 1),
     sourcePenalty: latestQuote.sourceKind === 'fallback' ? 1 : 0,
+    'kb.trendStructureScore': knowledgeFeatures.trendStructureScore,
+    'kb.patternLocationScore': knowledgeFeatures.patternLocationScore,
+    'kb.breakoutFailureRisk': knowledgeFeatures.breakoutFailureRisk,
+    'kb.pullbackQuality': knowledgeFeatures.pullbackQuality,
+    'kb.supportResistanceQuality': knowledgeFeatures.supportResistanceQuality,
+    'kb.macroAlignmentScore': knowledgeFeatures.macroAlignmentScore,
   }
 
   return {
@@ -151,6 +168,7 @@ export function buildProbabilityTrainingSamples(
   const points = dedupeHistoryByTimestamp(history)
     .filter((point) => Number.isFinite(point.price) && point.price > 0)
     .sort((left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime())
+  const barrierPoints = points.map(historyPointToBarrierPoint)
   const samples: ProbabilityTrainingSample[] = []
 
   for (let index = minHistoryPoints; index < points.length - 1; index += 1) {
@@ -166,37 +184,32 @@ export function buildProbabilityTrainingSamples(
       technicals: buildTechnicalFeaturesFromPrices([...prior, current].map((point) => point.price)),
       patternSignals: [],
     })
-    const currentMs = new Date(current.timestamp).getTime()
 
     for (const horizonMinutes of horizons) {
-      const horizonMs = horizonMinutes * 60 * 1000
-      const futureIndex = points.findIndex((candidate, candidateIndex) => {
-        if (candidateIndex <= index) {
-          return false
-        }
-        return new Date(candidate.timestamp).getTime() - currentMs >= horizonMs
+      const barrierLabel = buildTripleBarrierLabel(barrierPoints, index, {
+        horizonMinutes,
+        tp1ReturnPercent: 0.01,
+        stopLossReturnPercent: -0.01,
       })
-      if (futureIndex < 0) {
-        continue
-      }
-      const future = points[futureIndex]
-      const window = points.slice(index + 1, futureIndex + 1)
-      const minPrice = window.reduce((min, point) => Math.min(min, point.price), current.price)
-      const maxPrice = window.reduce((max, point) => Math.max(max, point.price), current.price)
-      const returnPercent = (future.price - current.price) / current.price
       samples.push({
         openedAt: current.timestamp,
         horizonMinutes,
         features,
         label: {
           horizonMinutes,
-          evaluatedAt: future.timestamp,
+          evaluatedAt: barrierLabel.evaluatedAt,
           entryPrice: current.price,
-          exitPrice: future.price,
-          returnPercent,
-          maxDrawdown: (minPrice - current.price) / current.price,
-          maxFavorableExcursion: (maxPrice - current.price) / current.price,
-          positive: returnPercent > 0,
+          exitPrice: barrierLabel.exitPrice,
+          returnPercent: barrierLabel.returnPercent,
+          maxDrawdown: barrierLabel.maxDrawdown,
+          maxFavorableExcursion: barrierLabel.maxFavorableExcursion,
+          barrierOutcome: barrierLabel.outcome,
+          touchedAt: barrierLabel.touchedAt,
+          tp1Price: barrierLabel.tp1Price,
+          stopLossPrice: barrierLabel.stopLossPrice,
+          barsObserved: barrierLabel.barsObserved,
+          complete: barrierLabel.complete,
+          positive: barrierLabel.positive,
         },
       })
     }
@@ -227,27 +240,28 @@ export function buildProbabilityMetricsFromSnapshots(
   const sorted = snapshots
     .slice()
     .sort((left, right) => new Date(left.quoteTimestamp).getTime() - new Date(right.quoteTimestamp).getTime())
+  const barrierPoints = sorted.map((snapshot) => ({ timestamp: snapshot.quoteTimestamp, price: snapshot.price }))
 
   return horizons.map((horizonMinutes) => {
-    const horizonMs = horizonMinutes * 60 * 1000
     const outcomes: Array<{ probability: number; positive: boolean }> = []
     for (let index = 0; index < sorted.length - 1; index += 1) {
       const current = sorted[index]
-      const currentMs = new Date(current.quoteTimestamp).getTime()
-      const futureIndex = sorted.findIndex((candidate, candidateIndex) => {
-        if (candidateIndex <= index) {
-          return false
-        }
-        return new Date(candidate.quoteTimestamp).getTime() - currentMs >= horizonMs
-      })
-      if (futureIndex < 0 || current.price <= 0) {
+      if (current.price <= 0) {
         continue
       }
-      const future = sorted[futureIndex]
+      const barrierLabel = buildTripleBarrierLabel(
+        barrierPoints,
+        index,
+        {
+          horizonMinutes,
+          tp1ReturnPercent: 0.01,
+          stopLossReturnPercent: -0.01,
+        },
+      )
       const probability = current.modelProbability ?? snapshotRuleProbability(current)
       outcomes.push({
         probability: clamp(probability, 0.01, 0.99),
-        positive: future.price > current.price,
+        positive: barrierLabel.positive,
       })
     }
     return summarizeProbabilityOutcomes(horizonMinutes, outcomes)
@@ -260,7 +274,7 @@ export function buildBacktestProbabilitySummary(metrics: ProbabilityModelMetrics
     return '概率模型回测样本不足，暂不能输出可靠 Brier 或校准分桶。'
   }
   const primary = usable.find((metric) => metric.horizonMinutes === 60) ?? usable[0]
-  return `${primary.horizonMinutes} 分钟概率校准样本 ${primary.sampleSize} 个，Brier ${formatRatio(primary.brierScore)}，正收益基准 ${formatPercent(primary.positiveRate)}。`
+  return `${primary.horizonMinutes} 分钟概率校准样本 ${primary.sampleSize} 个，Brier ${formatRatio(primary.brierScore)}，TP1 先达率 ${formatPercent(primary.positiveRate)}。`
 }
 
 function predictForHorizon(
@@ -291,7 +305,7 @@ function predictForHorizon(
     sampleSize: calibrationSample,
     brierScore: calibration?.brierScore ?? null,
     calibrationBucketKey: bucket.key,
-    summary: `${horizonMinutes} 分钟上涨概率 ${formatPercent(conservativeProbability)}，置信度 ${totalConfidence}/100，校准样本 ${calibrationSample}。`,
+    summary: `${horizonMinutes} 分钟 TP1 先达概率 ${formatPercent(conservativeProbability)}，置信度 ${totalConfidence}/100，校准样本 ${calibrationSample}。`,
   }
 }
 
@@ -326,6 +340,12 @@ function scoreLogit(features: ProbabilityModelFeatureSet, horizonMinutes: Probab
     value('bullishPatternScore') * 0.26 -
     value('bearishPatternScore') * 0.34 +
     value('confluenceSupport') * 0.22 +
+    value('kb.trendStructureScore') * 0.18 +
+    value('kb.patternLocationScore') * 0.18 -
+    value('kb.breakoutFailureRisk') * 0.30 +
+    value('kb.pullbackQuality') * 0.16 +
+    value('kb.supportResistanceQuality') * 0.12 +
+    value('kb.macroAlignmentScore') * 0.12 +
     value('dataDepth') * 0.10 -
     value('sourcePenalty') * 0.24
   )
@@ -362,7 +382,7 @@ function summarizeProbabilityOutcomes(
     calibrationBuckets,
     summary: outcomes.length < 5
       ? `${horizonMinutes} 分钟样本 ${outcomes.length} 个，校准仍不足。`
-      : `${horizonMinutes} 分钟样本 ${outcomes.length} 个，Brier ${formatRatio(brierScore)}，正收益率 ${formatPercent(positiveRate)}。`,
+      : `${horizonMinutes} 分钟样本 ${outcomes.length} 个，Brier ${formatRatio(brierScore)}，TP1 先达率 ${formatPercent(positiveRate)}。`,
   }
 }
 
