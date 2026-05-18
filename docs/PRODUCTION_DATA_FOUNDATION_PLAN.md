@@ -29,7 +29,7 @@
 - `/api/cron/providers` 已新增，用于低频 provider health 探测。
 - `/api/admin/backfill-history` 已新增，用于受保护历史种子导入。
 - `history-backfill` 纯函数已新增，负责校验、规范化、去重、排序和窗口限制。
-- `vercel.json` 已配置 quote ingest 与 provider probe 两条 Cron。
+- `vercel.json` 已保留 Vercel Hobby 可部署的每日 quote ingest 保底 Cron；高频 quote ingest 和低频 provider probe 通过已新增 API 入口交给外部定时器或 Vercel Pro Cron。
 
 ## 待外部配置
 
@@ -74,4 +74,4 @@ curl -X POST "https://gold-price-monitor-gray.vercel.app/api/admin/backfill-hist
 
 - historical/backfill 样本只用于图表初始化和冷启动缓冲；是否进入模型 gate 必须继续标记样本来源并防止污染 live 评估。
 - provider probe 不应高频运行；Yahoo 仍只适合作为国际金低频 fallback。
-- 如果 Vercel 账号不支持高频 Cron，需要用外部定时器调用 `/api/cron/ingest`。
+- 如果 Vercel 账号不支持高频 Cron，需要用外部定时器调用 `/api/cron/ingest`，并低频调用 `/api/cron/providers`。

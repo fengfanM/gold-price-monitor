@@ -59,11 +59,7 @@ GOLD_BLOGGER_RSS_URLS=https://news.google.com/rss/search?q=gold%20analyst%20outl
   "crons": [
     {
       "path": "/api/cron/ingest",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/cron/providers",
-      "schedule": "17 * * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }
@@ -71,7 +67,7 @@ GOLD_BLOGGER_RSS_URLS=https://news.google.com/rss/search?q=gold%20analyst%20outl
 
 生产必须设置 `CRON_SECRET`。Vercel Cron 自身会携带 `x-vercel-cron: 1`，手动排查时支持 `Authorization: Bearer $CRON_SECRET`、`x-cron-secret` header 或 `?secret=`。需要立即采样可追加 `?force=1`。
 
-如果当前 Vercel 账号不支持 5 分钟级 Cron，部署可能提示计划限制。此时保留 API 入口，用 Render Cron、GitHub Actions、UptimeRobot 或其他外部定时器每 1-5 分钟调用 `/api/cron/ingest`，每 30-60 分钟调用 `/api/cron/providers`。
+当前 Vercel Hobby 账号只允许每日 Cron，所以仓库默认保留每日保底采集，避免部署失败。若要高频采样，可升级 Vercel Pro 后把 `/api/cron/ingest` 改为 `*/5 * * * *`，并给 `/api/cron/providers` 增加低频 Cron；也可以用 Render Cron、GitHub Actions、UptimeRobot 或其他外部定时器每 1-5 分钟调用 `/api/cron/ingest`，每 30-60 分钟调用 `/api/cron/providers`。
 
 历史回填示例：
 
