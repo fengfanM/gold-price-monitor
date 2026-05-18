@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 
-const DEFAULT_PROVIDER_TIMEOUT_MS = Number(process.env.MARKET_PROVIDER_TIMEOUT_MS ?? '1800')
+const DEFAULT_PROVIDER_TIMEOUT_MS = Number(process.env.MARKET_PROVIDER_TIMEOUT_MS ?? '5000')
 const DISABLE_EXTERNAL_PROVIDERS = process.env.DISABLE_EXTERNAL_MARKET_CONTEXT === '1'
 const BROWSER_USER_AGENT = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
@@ -570,6 +570,10 @@ export async function fetchCmeGoldVolume(): Promise<ProviderResult<ProviderQuote
     process.env.CME_GOLD_VOLUME_CSV_URL,
     process.env.CME_GOLD_VOLUME_OFFICIAL_CSV_URL,
     process.env.CME_GOLD_VOLUME_CSV_FILE,
+  ], [
+    'CME_GOLD_VOLUME_CSV_URL',
+    'CME_GOLD_VOLUME_OFFICIAL_CSV_URL',
+    'CME_GOLD_VOLUME_CSV_FILE',
   ])
 }
 
@@ -979,12 +983,14 @@ function parseCentralBankGoldBuying(html: string) {
 async function fetchConfiguredOfficialSeries(
   config: typeof CONFIGURED_OFFICIAL_SERIES[keyof typeof CONFIGURED_OFFICIAL_SERIES],
   configuredSources?: Array<string | undefined>,
+  configuredSourceNames?: string[],
 ) {
   return safeProvider(config.provider, async () => {
     const sources = configuredSources ?? [config.env, ...config.aliases].map((env) => process.env[env])
     const source = sources.find((value): value is string => Boolean(value))
     if (!source) {
-      throw new Error(`${[config.env, ...config.aliases].join('/')} 未配置`)
+      const names = configuredSourceNames ?? [config.env, ...config.aliases]
+      throw new Error(`${names.join('/')} 未配置`)
     }
     const rows = parseCsv(await readConfiguredCsvSource(source, config.env))
     const latest = rows[0]
