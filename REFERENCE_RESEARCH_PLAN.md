@@ -5,7 +5,7 @@
 参考仓库已统一克隆到：
 
 ```text
-/Users/bytedance/Documents/reference-investment-repos
+../reference-investment-repos
 ```
 
 本轮 15 个仓库均已成功 clone：
@@ -364,4 +364,3 @@
 - 未接真实数据源的因子只能显示为 `待接入`，不能参与强提醒加分。
 - ML 模型必须先通过 Walk-forward 和失败样本审计，不能直接上线喊单。
 - 数据源抓取必须尊重频率限制和降级策略。
-

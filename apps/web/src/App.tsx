@@ -902,10 +902,10 @@ function App() {
     () => {
       const apiCandles = mapServerCandles(serverCandles[timeframe])
       return apiCandles.length > 0
-        ? apiCandles
+        ? mergeLatestQuoteIntoCandles(apiCandles, quote, activeTimeframe.minutes)
         : buildCandles(recentHistory, activeTimeframe.minutes)
     },
-    [activeTimeframe.minutes, recentHistory, serverCandles, timeframe],
+    [activeTimeframe.minutes, quote, recentHistory, serverCandles, timeframe],
   )
   const quoteRows = [
     quote?.marketReference.au9999,
@@ -1198,6 +1198,7 @@ function App() {
               prediction={chartPrediction}
               referenceData={intradayData.reference}
               signal={chartSignal}
+              timeframeLabel={activeTimeframe.label}
             />
           ) : (
             <CandlestickChartPanel
@@ -2964,9 +2965,11 @@ function IntradayChartPanel(props: {
   signal: ChartSignal
   patternSignals: PatternSignal[]
   isLoading: boolean
+  timeframeLabel: string
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [hover, setHover] = useState<IntradayHover | null>(null)
+  const latestPoint = props.priceData[props.priceData.length - 1] ?? null
   const extremes = useMemo(() => buildLineExtremes(props.priceData), [props.priceData])
   const syntheticCandles = useMemo(() => lineDataToSyntheticCandles(props.priceData), [props.priceData])
   const ma5Data = useMemo(() => buildMovingAverageData(syntheticCandles, 5), [syntheticCandles])
@@ -3120,18 +3123,26 @@ function IntradayChartPanel(props: {
         forecast={forecast}
         patterns={props.patternSignals}
         prediction={props.prediction}
+        scopeLabel={`${props.timeframeLabel}展示 / 全局信号`}
         signal={props.signal}
       />
       <div className="data-window">
-        <DataItem label="时间" value={hover?.timeLabel ?? '--'} />
+        <DataItem label="周期" value={`${props.timeframeLabel}分时`} />
+        <DataItem label="点数" value={`${props.priceData.length}`} />
+        <DataItem
+          label="时间"
+          value={hover?.timeLabel ?? (latestPoint ? formatTimestamp(latestPoint.time) : '--')}
+        />
         <DataItem
           label="工银"
           value={
             hover
               ? currencyFormatter.format(hover.price)
-              : props.latestPrice === null
-                ? '--'
-                : currencyFormatter.format(props.latestPrice)
+              : latestPoint
+                ? currencyFormatter.format(latestPoint.value)
+                : props.latestPrice === null
+                  ? '--'
+                  : currencyFormatter.format(props.latestPrice)
           }
           tone="up"
         />
@@ -3177,6 +3188,7 @@ function CandlestickChartPanel(props: {
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [hover, setHover] = useState<CandleHover | null>(null)
+  const latestCandle = props.candleData[props.candleData.length - 1] ?? null
   const ma5Data = useMemo(() => buildMovingAverageData(props.candleData, 5), [props.candleData])
   const ma10Data = useMemo(() => buildMovingAverageData(props.candleData, 10), [props.candleData])
   const ma20Data = useMemo(() => buildMovingAverageData(props.candleData, 20), [props.candleData])
@@ -3351,15 +3363,17 @@ function CandlestickChartPanel(props: {
         forecast={forecast}
         patterns={props.patternSignals}
         prediction={props.prediction}
+        scopeLabel={`${props.timeframeLabel}K线 / 全局信号`}
         signal={props.signal}
       />
       <div className="data-window data-window--ohlc">
         <DataItem label="周期" value={props.timeframeLabel} />
-        <DataItem label="时间" value={hover?.timeLabel ?? '--'} />
-        <DataItem label="开" value={formatMaybePrice(hover?.open ?? props.latestPrice)} />
-        <DataItem label="高" value={formatMaybePrice(hover?.high ?? null)} tone="up" />
-        <DataItem label="低" value={formatMaybePrice(hover?.low ?? null)} tone="down" />
-        <DataItem label="收" value={formatMaybePrice(hover?.close ?? props.latestPrice)} />
+        <DataItem label="根数" value={`${props.candleData.length}`} />
+        <DataItem label="时间" value={hover?.timeLabel ?? (latestCandle ? formatTimestamp(latestCandle.time) : '--')} />
+        <DataItem label="开" value={formatMaybePrice(hover?.open ?? latestCandle?.open ?? props.latestPrice)} />
+        <DataItem label="高" value={formatMaybePrice(hover?.high ?? latestCandle?.high ?? null)} tone="up" />
+        <DataItem label="低" value={formatMaybePrice(hover?.low ?? latestCandle?.low ?? null)} tone="down" />
+        <DataItem label="收" value={formatMaybePrice(hover?.close ?? latestCandle?.close ?? props.latestPrice)} />
         {showMa ? <DataItem label="MA5" value={formatMaybePrice(hover?.ma5 ?? latestMa5)} /> : null}
         {showMa ? <DataItem label="MA10" value={formatMaybePrice(hover?.ma10 ?? latestMa10)} /> : null}
         {showMa ? <DataItem label="MA20" value={formatMaybePrice(hover?.ma20 ?? latestMa20)} /> : null}
@@ -3439,6 +3453,7 @@ function ChartSignalStrip(props: {
   forecast: ChartForecast
   patterns: PatternSignal[]
   prediction: ChartPrediction
+  scopeLabel: string
   signal: ChartSignal
 }) {
   const leadingPattern = props.patterns[0] ?? null
@@ -3446,7 +3461,7 @@ function ChartSignalStrip(props: {
   return (
     <div className={`chart-signal-strip chart-signal-strip--${props.signal.tone}`}>
       <div className="chart-signal-card">
-        <span>图上信号</span>
+        <span>图上信号 · {props.scopeLabel}</span>
         <strong>{props.signal.label}</strong>
         <small>{props.signal.detail}</small>
       </div>
@@ -4354,6 +4369,46 @@ function mapServerCandles(candles: CandlePayload[] | undefined) {
     .filter((item): item is CandleDatum => item !== null)
 }
 
+function mergeLatestQuoteIntoCandles(
+  candles: CandleDatum[],
+  quote: QuotePayload | null,
+  bucketMinutes: number,
+) {
+  if (!quote || candles.length < 1 || !Number.isFinite(quote.price)) {
+    return candles
+  }
+
+  const quoteTime = toUtcTimestamp(quote.fetchedAt ?? quote.updatedAt)
+  if (quoteTime === null) {
+    return candles
+  }
+
+  const bucketSeconds = Math.max(1, bucketMinutes) * 60
+  const quoteBucketTime = (Math.floor(Number(quoteTime) / bucketSeconds) * bucketSeconds) as UTCTimestamp
+  const nextCandles = candles.slice()
+  const latestIndex = nextCandles.findIndex((item) => item.time === quoteBucketTime)
+
+  if (latestIndex >= 0) {
+    const candle = nextCandles[latestIndex]
+    nextCandles[latestIndex] = {
+      ...candle,
+      high: Math.max(candle.high, quote.price),
+      low: Math.min(candle.low, quote.price),
+      close: quote.price,
+    }
+    return nextCandles
+  }
+
+  nextCandles.push({
+    time: quoteBucketTime,
+    open: quote.price,
+    high: quote.price,
+    low: quote.price,
+    close: quote.price,
+  })
+  return nextCandles.sort((left, right) => Number(left.time) - Number(right.time))
+}
+
 function lineDataToSyntheticCandles(data: LineDatum[]) {
   return data.map((point) => ({
     time: point.time,
@@ -4532,6 +4587,7 @@ function chartOptions(container: HTMLElement) {
       secondsVisible: false,
       rightOffset: 8,
       barSpacing: 8,
+      tickMarkFormatter: (time: Time) => formatChartTimeLabel(time),
     },
     handleScroll: {
       mouseWheel: true,
@@ -4546,6 +4602,7 @@ function chartOptions(container: HTMLElement) {
     },
     localization: {
       priceFormatter: (value: number) => currencyFormatter.format(value),
+      timeFormatter: (time: Time) => formatCrosshairTime(time),
     },
   } as const
 }
@@ -4577,6 +4634,21 @@ function formatCrosshairTime(value: Time) {
   if (typeof value === 'object' && value !== null && 'year' in value) {
     const iso = new Date(value.year, value.month - 1, value.day).toISOString()
     return formatDateTime(iso)
+  }
+
+  return String(value)
+}
+
+function formatChartTimeLabel(value: Time) {
+  if (typeof value === 'number') {
+    const date = new Date(value * 1000)
+    return Number.isNaN(date.getTime())
+      ? String(value)
+      : date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+  }
+
+  if (typeof value === 'object' && value !== null && 'year' in value) {
+    return `${String(value.month).padStart(2, '0')}/${String(value.day).padStart(2, '0')}`
   }
 
   return String(value)
