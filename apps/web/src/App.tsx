@@ -37,6 +37,12 @@ type SourceHealth = 'live' | 'stale' | 'offline'
 type ViewMode = 'intraday' | 'candles'
 type TerminalView = 'dashboard' | 'backtest' | 'providers'
 type Timeframe = '1m' | '5m' | '15m' | '60m'
+type TimeframeConfig = {
+  id: Timeframe
+  label: string
+  minutes: number
+  visibleBars: number
+}
 type QuoteBoardTab = 'consensus' | 'icbc' | 'sge' | 'banks'
 type OpportunityLevel = 'normal' | 'watch' | 'strong' | 'elevated' | 'critical' | 'none'
 type OpportunityTab = 'decision' | 'plan' | 'risk' | 'evidence' | 'validation'
@@ -674,11 +680,11 @@ const BACKTEST_REFRESH_INTERVAL_MS = 15_000
 const PROVIDER_REFRESH_INTERVAL_MS = 60_000
 const STALE_AFTER_MS = 90_000
 
-const TIMEFRAMES: Array<{ id: Timeframe; label: string; minutes: number }> = [
-  { id: '1m', label: '1分', minutes: 1 },
-  { id: '5m', label: '5分', minutes: 5 },
-  { id: '15m', label: '15分', minutes: 15 },
-  { id: '60m', label: '60分', minutes: 60 },
+const TIMEFRAMES: TimeframeConfig[] = [
+  { id: '1m', label: '1分', minutes: 1, visibleBars: 240 },
+  { id: '5m', label: '5分', minutes: 5, visibleBars: 180 },
+  { id: '15m', label: '15分', minutes: 15, visibleBars: 120 },
+  { id: '60m', label: '60分', minutes: 60, visibleBars: 96 },
 ]
 
 const QUOTE_BOARD_TABS: Array<{ id: QuoteBoardTab; label: string }> = [
@@ -891,21 +897,23 @@ function App() {
     return now - freshnessMs > STALE_AFTER_MS ? 'stale' : 'live'
   }, [quote, error, now])
 
+  const activeTimeframe = TIMEFRAMES.find((item) => item.id === timeframe) ?? TIMEFRAMES[1]
   const renderableHistory = useMemo(() => buildRenderableHistory(history, quote), [history, quote])
   const recentHistory = useMemo(() => selectRecentHistory(renderableHistory, 24), [renderableHistory])
-  const activeTimeframe = TIMEFRAMES.find((item) => item.id === timeframe) ?? TIMEFRAMES[1]
+  const sessionHistory = useMemo(() => selectLatestActiveSessionHistory(recentHistory), [recentHistory])
   const intradayData = useMemo(
-    () => buildIntradayData(recentHistory, activeTimeframe.minutes),
-    [activeTimeframe.minutes, recentHistory],
+    () => buildIntradayData(sessionHistory, activeTimeframe.minutes, activeTimeframe.visibleBars),
+    [activeTimeframe.minutes, activeTimeframe.visibleBars, sessionHistory],
   )
   const candleData = useMemo(
     () => {
       const apiCandles = mapServerCandles(serverCandles[timeframe])
-      return apiCandles.length > 0
+      const mergedCandles = apiCandles.length > 0
         ? mergeLatestQuoteIntoCandles(apiCandles, quote, activeTimeframe.minutes)
-        : buildCandles(recentHistory, activeTimeframe.minutes)
+        : buildCandles(sessionHistory, activeTimeframe.minutes)
+      return selectVisibleCandles(mergedCandles, activeTimeframe.visibleBars)
     },
-    [activeTimeframe.minutes, quote, recentHistory, serverCandles, timeframe],
+    [activeTimeframe.minutes, activeTimeframe.visibleBars, quote, serverCandles, sessionHistory, timeframe],
   )
   const quoteRows = [
     quote?.marketReference.au9999,
@@ -4258,14 +4266,64 @@ function selectRecentHistory(history: HistoryPoint[], windowHours: number) {
   return sliced.length >= 2 ? sliced : history
 }
 
-function buildIntradayData(history: HistoryPoint[], bucketMinutes: number) {
-  const normalizedHistory = bucketMinutes <= 1 ? history : bucketHistoryLine(history, bucketMinutes)
-  const price = normalizedHistory
+function selectLatestActiveSessionHistory(history: HistoryPoint[]) {
+  const sorted = history
+    .filter((point) => {
+      const timestamp = new Date(point.timestamp).getTime()
+      return Number.isFinite(timestamp) && Number.isFinite(point.price)
+    })
+    .sort((left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime())
+
+  const latest = sorted[sorted.length - 1]
+  if (!latest) {
+    return sorted
+  }
+
+  const latestDayKey = localDateKey(new Date(latest.timestamp))
+  const sameDay = sorted.filter((point) => localDateKey(new Date(point.timestamp)) === latestDayKey)
+  const session = sameDay.length >= 2 ? sameDay : sorted
+  return trimLeadingInactiveHistory(session)
+}
+
+function localDateKey(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function trimLeadingInactiveHistory(history: HistoryPoint[]) {
+  if (history.length < 3) {
+    return history
+  }
+
+  const firstChangeIndex = history.findIndex((point, index) => {
+    if (index === 0) {
+      return false
+    }
+    return hasMeaningfulPriceChange(history[index - 1]?.price ?? point.price, point.price)
+  })
+
+  if (firstChangeIndex <= 1 || history.length - firstChangeIndex < 2) {
+    return history
+  }
+
+  return history.slice(firstChangeIndex - 1)
+}
+
+function hasMeaningfulPriceChange(left: number, right: number) {
+  return Math.abs(left - right) >= 0.01
+}
+
+function buildIntradayData(history: HistoryPoint[], bucketMinutes: number, visibleBars: number) {
+  const normalizedHistory = bucketHistoryLine(history, bucketMinutes)
+  const allPrice = normalizedHistory
     .map((point) => ({
       time: toUtcTimestamp(point.timestamp),
       value: point.price,
     }))
     .filter((point) => point.time !== null) as LineDatum[]
+
+  const price = selectVisibleLineData(allPrice, visibleBars)
+  const firstVisibleTime = price[0]?.time ?? null
+  const lastVisibleTime = price[price.length - 1]?.time ?? null
 
   const reference = normalizedHistory
     .map((point) => {
@@ -4282,8 +4340,20 @@ function buildIntradayData(history: HistoryPoint[], bucketMinutes: number) {
       }
     })
     .filter((point): point is LineDatum => point !== null)
+    .filter((point) => {
+      if (firstVisibleTime === null || lastVisibleTime === null) {
+        return true
+      }
+      return point.time >= firstVisibleTime && point.time <= lastVisibleTime
+    })
 
   return { price, reference }
+}
+
+function selectVisibleLineData(data: LineDatum[], visibleBars: number) {
+  const sorted = data.slice().sort((left, right) => Number(left.time) - Number(right.time))
+  const session = selectLatestTimeSession(sorted, (point) => point.value)
+  return session.slice(-visibleBars)
 }
 
 function bucketHistoryLine(history: HistoryPoint[], bucketMinutes: number) {
@@ -4367,6 +4437,46 @@ function mapServerCandles(candles: CandlePayload[] | undefined) {
       }
     })
     .filter((item): item is CandleDatum => item !== null)
+}
+
+function selectVisibleCandles(candles: CandleDatum[], visibleBars: number) {
+  const sorted = candles.slice().sort((left, right) => Number(left.time) - Number(right.time))
+  const session = selectLatestTimeSession(sorted, (candle) => candle.close)
+  return session.slice(-visibleBars)
+}
+
+function selectLatestTimeSession<T extends { time: UTCTimestamp }>(
+  data: T[],
+  getValue: (item: T) => number,
+) {
+  const latest = data[data.length - 1]
+  if (!latest) {
+    return data
+  }
+
+  const latestDayKey = localDateKey(new Date(Number(latest.time) * 1000))
+  const sameDay = data.filter((item) => localDateKey(new Date(Number(item.time) * 1000)) === latestDayKey)
+  const session = sameDay.length >= 2 ? sameDay : data
+  return trimLeadingInactiveTimeData(session, getValue)
+}
+
+function trimLeadingInactiveTimeData<T>(data: T[], getValue: (item: T) => number) {
+  if (data.length < 3) {
+    return data
+  }
+
+  const firstChangeIndex = data.findIndex((item, index) => {
+    if (index === 0) {
+      return false
+    }
+    return hasMeaningfulPriceChange(getValue(data[index - 1]), getValue(item))
+  })
+
+  if (firstChangeIndex <= 1 || data.length - firstChangeIndex < 2) {
+    return data
+  }
+
+  return data.slice(firstChangeIndex - 1)
 }
 
 function mergeLatestQuoteIntoCandles(
