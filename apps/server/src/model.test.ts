@@ -41,10 +41,44 @@ describe('calibrated probability model', () => {
     assert.equal(typeof features.values.rsiCold, 'number')
     assert.equal(typeof features.values['kb.trendStructureScore'], 'number')
     assert.equal(typeof features.values['kb.breakoutFailureRisk'], 'number')
+    assert.equal(features.values.bullishPatternScore, 0)
+    assert.equal(typeof features.values.candidateBullishPatternScore, 'number')
     assert.equal(prediction.predictions.length, 4)
     assert.equal(prediction.primaryPrediction.horizonMinutes, 60)
     assert.equal(prediction.primaryPrediction.probability > 0 && prediction.primaryPrediction.probability < 1, true)
     assert.equal(prediction.limitations.some((item) => item.includes('不构成投资建议')), true)
+  })
+
+  it('keeps unconfirmed bullish patterns as weak hints instead of strong probability boosters', () => {
+    const sharedInput = {
+      history: makeHistory(30),
+      latestQuote: makeQuote(99.2, '2026-05-16T09:30:00.000Z'),
+      stats: makeStats(),
+      marketContext: makeMarketContext(62),
+      technicals: {
+        ma5: 99.5,
+        ma10: 100,
+        ma20: 100.4,
+        rsi14: 34,
+        macd: { dif: 0.1, dea: 0.05, histogram: 0.08 },
+        shortTrend: 'rising' as const,
+      },
+    }
+    const candidate = makePattern('double_bottom', 'bullish', 76)
+    const confirmed = { ...candidate, confirmationStatus: 'confirmed' as const }
+    const candidateFeatures = extractProbabilityFeatures({
+      ...sharedInput,
+      patternSignals: [candidate],
+    })
+    const confirmedFeatures = extractProbabilityFeatures({
+      ...sharedInput,
+      patternSignals: [confirmed],
+    })
+
+    assert.equal(candidateFeatures.values.bullishPatternScore, 0)
+    assert.equal((candidateFeatures.values.candidateBullishPatternScore ?? 0) > 0, true)
+    assert.equal((confirmedFeatures.values.bullishPatternScore ?? 0) > 0, true)
+    assert.equal(confirmedFeatures.values.candidateBullishPatternScore, 0)
   })
 
   it('builds future horizon labels and Brier calibration metrics without Python runtime', () => {

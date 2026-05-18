@@ -350,6 +350,47 @@ describe('opportunity strategy engine', () => {
     assert.notEqual(signal.level, 'strong')
     assert.equal(signal.risks.some((item) => item.includes('心理纪律官')), true)
   })
+
+  it('blocks escalation when the knowledge base detects compressed MA whipsaw noise', () => {
+    const start = new Date('2026-05-16T09:30:00.000Z').getTime()
+    const history = Array.from({ length: 18 }, (_item, index) =>
+      makeHistoryPoint(
+        new Date(start + index * 60_000).toISOString(),
+        index % 2 === 0 ? 586.8 : 587.2,
+      ),
+    )
+    const signal = evaluateOpportunity({
+      history,
+      latestQuote: makeQuote(587, '2026-05-16T09:49:00.000Z'),
+      stats: {
+        ...makeStats(),
+        currentPrice: 587,
+        high24h: 596,
+        low24h: 578,
+        percentChange24h: -0.002,
+        drawdownAmount24h: 9,
+        drawdownPercent24h: 0.0151,
+        pointCount: 19,
+      },
+      sourceStatus: makeSourceStatus(),
+      technicals: {
+        ma5: 587,
+        ma10: 587,
+        ma20: 587,
+        rsi14: 49,
+        macd: { dif: 0, dea: 0, histogram: 0 },
+        shortTrend: 'flat',
+      },
+    })
+
+    const chopCheck = signal.knowledgeRuleAudit.checks.find((check) => check.id === 'kb:chop-and-compression')
+    const kbGate = signal.finalDecision.hardGates.find((gate) => gate.id === 'kb:rule-pack')
+
+    assert.equal(chopCheck?.status, 'block')
+    assert.equal(kbGate?.status, 'block')
+    assert.equal(kbGate?.reason.includes('均线反复穿越'), true)
+    assert.equal(signal.finalDecision.strongReminderAllowed, false)
+  })
 })
 
 function makeQuote(price: number, timestamp = '2026-05-16T10:00:00.000Z'): QuoteSample {

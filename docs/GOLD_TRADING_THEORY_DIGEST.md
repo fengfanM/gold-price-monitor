@@ -28,6 +28,7 @@
 | 双底/双顶 | 形态必须有颈线、确认、失效价 | 疑似双底未站上颈线不得强提醒；疑似双顶压制买点 | pattern kind、confirmationStatus | `patternLocationScore` 和 gate | 箱体中位的假双底/假双顶 |
 | K 线反转 | 锤子、吞没、十字星需要位置与后续确认 | 单根 K 线只给观察，不给买卖结论 | candle pattern、rangePosition | 低权重解释 | 高波动区假信号多 |
 | 假突破 | 高位、波动扩张、未回踩确认时假突破概率高 | 突破后必须看 2-3 个采样点和回踩不破 | breakoutFailureRisk | 强提醒硬拦截 | 极强趋势中回踩很浅 |
+| 震荡压缩 | 均线反复穿越和窄幅压缩会放大假信号 | 区间中部、MA whipsaw、压缩未突破时只观察 | rangeCompressionScore、maWhipsawRisk | 概率负权重和 gate 降级 | 单边突破后需重新评估 |
 
 ## 4. 概率交易与回测
 
@@ -49,13 +50,14 @@
 
 ## 6. 已落地到代码的规则包
 
-`apps/server/src/knowledge-rules.ts` 实现了 `gold-kb-rule-pack-v1`，当前包含五个审校器：
+`apps/server/src/knowledge-rules.ts` 实现了 `gold-kb-rule-pack-v1`，当前包含六个审校器：
 
 | 规则 | 作用 | 强提醒影响 |
 | --- | --- | --- |
 | `kb:trend-structure` | 检查短线结构、均线、MACD、多周期是否支持反转/延续 | 弱趋势会阻止强信号 |
 | `kb:pattern-location` | 检查看多形态是否确认、是否处于高位追单区 | 候选形态只允许观察 |
-| `kb:false-breakout` | 识别高位、波动扩张、候选未确认组合 | 高风险时硬拦截 |
+| `kb:false-breakout` | 识别高位、波动扩张、候选未确认、扫流动性后回落组合 | 高风险时硬拦截 |
+| `kb:chop-and-compression` | 识别窄幅压缩、箱体中位和均线反复穿越 | 噪音过高时阻止概率模型抬分 |
 | `kb:event-phase` | CPI/FOMC/非农等事件窗口分层 | 事件第一波禁止追单型强提醒 |
 | `kb:risk-reward-discipline` | 检查交易计划赔率 | 低于 2:1 直接拦截 |
 

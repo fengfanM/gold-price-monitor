@@ -79,7 +79,7 @@ Gold Price Monitor 的目标就是把这些问题变成一套清晰、可复盘�
 | Cross-market | AU9999 锚点、国内参考价、国际金、人民币汇率 |
 | Macro | 美元指数、实际利率、通胀预期、VIX、ETF、COT、央行购金 |
 | Risk | 数据质量、事件窗口、多周期冲突、心理纪律 |
-| Knowledge Rules | 趋势结构、形态位置、假突破风险、回撤质量、支撑阻力质量、宏观顺逆风 |
+| Knowledge Rules | 趋势结构、形态位置、假突破/扫流动性风险、震荡压缩过滤、回撤质量、支撑阻力质量、宏观顺逆风 |
 
 ### Knowledge Rule Pack
 
@@ -89,7 +89,8 @@ Gold Price Monitor 的目标就是把这些问题变成一套清晰、可复盘�
 | --- | --- | --- |
 | `kb:trend-structure` | 均线、MACD、短线结构和多周期方向 | 趋势未确认时降级 |
 | `kb:pattern-location` | 形态是否确认、是否在高位或箱体中位 | 候选形态只允许观察 |
-| `kb:false-breakout` | 高位、波动扩张、未回踩确认 | 高风险时阻止强提醒 |
+| `kb:false-breakout` | 高位、波动扩张、未回踩确认、扫流动性后回落 | 高风险时阻止强提醒 |
+| `kb:chop-and-compression` | 窄幅压缩、箱体中位、均线反复穿越 | 噪音过高时阻止概率模型抬分 |
 | `kb:event-phase` | CPI/FOMC/非农等事件阶段 | 事件第一波不追单 |
 | `kb:risk-reward-discipline` | 交易计划赔率是否至少 2:1 | 赔率不足时拦截 |
 

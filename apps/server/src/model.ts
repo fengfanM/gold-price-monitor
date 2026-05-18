@@ -64,7 +64,11 @@ export function extractProbabilityFeatures(input: {
     : null
   const premiumPercent = latestQuote.marketReference.calibration.premiumPercent
   const bullishPatternScore = patternSignals
-    .filter((pattern) => pattern.direction === 'bullish')
+    .filter((pattern) => pattern.direction === 'bullish' && isConfirmedPatternSignal(pattern))
+    .slice(0, 3)
+    .reduce((sum, pattern) => sum + pattern.confidence / 100, 0)
+  const candidateBullishPatternScore = patternSignals
+    .filter((pattern) => pattern.direction === 'bullish' && !isConfirmedPatternSignal(pattern))
     .slice(0, 3)
     .reduce((sum, pattern) => sum + pattern.confidence / 100, 0)
   const bearishPatternScore = patternSignals
@@ -108,6 +112,7 @@ export function extractProbabilityFeatures(input: {
       1,
     ),
     bullishPatternScore: clamp(bullishPatternScore, 0, 1),
+    candidateBullishPatternScore: clamp(candidateBullishPatternScore, 0, 1),
     bearishPatternScore: clamp(bearishPatternScore, 0, 1),
     confluenceSupport: confluence ? clamp((confluence.score - 50) / 50, -1, 1) : null,
     dataDepth: clamp(sorted.length / 80, 0, 1),
@@ -115,6 +120,10 @@ export function extractProbabilityFeatures(input: {
     'kb.trendStructureScore': knowledgeFeatures.trendStructureScore,
     'kb.patternLocationScore': knowledgeFeatures.patternLocationScore,
     'kb.breakoutFailureRisk': knowledgeFeatures.breakoutFailureRisk,
+    'kb.rangeCompressionScore': knowledgeFeatures.rangeCompressionScore,
+    'kb.liquiditySweepRisk': knowledgeFeatures.liquiditySweepRisk,
+    'kb.maWhipsawRisk': knowledgeFeatures.maWhipsawRisk,
+    'kb.sweepReclaimScore': knowledgeFeatures.sweepReclaimScore,
     'kb.pullbackQuality': knowledgeFeatures.pullbackQuality,
     'kb.supportResistanceQuality': knowledgeFeatures.supportResistanceQuality,
     'kb.macroAlignmentScore': knowledgeFeatures.macroAlignmentScore,
@@ -337,12 +346,17 @@ function scoreLogit(features: ProbabilityModelFeatureSet, horizonMinutes: Probab
     value('anchorExpensive') * 0.42 +
     value('marketSupport') * 0.28 +
     value('sentimentSupport') * 0.10 +
-    value('bullishPatternScore') * 0.26 -
+    value('bullishPatternScore') * 0.26 +
+    value('candidateBullishPatternScore') * 0.03 -
     value('bearishPatternScore') * 0.34 +
     value('confluenceSupport') * 0.22 +
     value('kb.trendStructureScore') * 0.18 +
     value('kb.patternLocationScore') * 0.18 -
     value('kb.breakoutFailureRisk') * 0.30 +
+    value('kb.sweepReclaimScore') * 0.12 -
+    value('kb.liquiditySweepRisk') * 0.26 -
+    value('kb.maWhipsawRisk') * 0.18 -
+    value('kb.rangeCompressionScore') * 0.06 +
     value('kb.pullbackQuality') * 0.16 +
     value('kb.supportResistanceQuality') * 0.12 +
     value('kb.macroAlignmentScore') * 0.12 +
@@ -405,6 +419,13 @@ function snapshotRuleProbability(snapshot: BacktestSnapshot) {
       ? -0.14
       : 0
   return sigmoid(scoreLogitPart + valuationPart + confluencePart + macroPart + patternPart)
+}
+
+function isConfirmedPatternSignal(pattern: PatternSignal) {
+  if (pattern.confirmationStatus) {
+    return pattern.confirmationStatus === 'confirmed'
+  }
+  return pattern.expectedConfirmationBars <= 1
 }
 
 function buildCalibrationLookup(metrics: ProbabilityModelMetrics[]): CalibrationLookup {

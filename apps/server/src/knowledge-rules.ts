@@ -75,18 +75,42 @@ export function buildKnowledgeRuleAudit(input: {
     buildCheck({
       id: 'kb:false-breakout',
       label: '知识库假突破过滤',
-      status: features.breakoutFailureRisk !== null && features.breakoutFailureRisk >= 0.65
+      status: (features.breakoutFailureRisk !== null && features.breakoutFailureRisk >= 0.65) ||
+        (features.liquiditySweepRisk !== null && features.liquiditySweepRisk >= 0.68)
         ? 'block'
-        : features.breakoutFailureRisk !== null && features.breakoutFailureRisk >= 0.35
+        : (features.breakoutFailureRisk !== null && features.breakoutFailureRisk >= 0.35) ||
+            (features.liquiditySweepRisk !== null && features.liquiditySweepRisk >= 0.35)
           ? 'watch'
           : 'pass',
-      reason: features.breakoutFailureRisk !== null && features.breakoutFailureRisk >= 0.65
-        ? '出现高位、长波动或候选形态未确认组合，假突破风险高。'
-        : features.breakoutFailureRisk !== null && features.breakoutFailureRisk >= 0.35
-          ? '突破/反弹质量仍需回踩确认。'
+      reason: (features.breakoutFailureRisk !== null && features.breakoutFailureRisk >= 0.65) ||
+        (features.liquiditySweepRisk !== null && features.liquiditySweepRisk >= 0.68)
+        ? '出现高位、长波动、扫流动性回落或候选形态未确认组合，假突破风险高。'
+        : (features.breakoutFailureRisk !== null && features.breakoutFailureRisk >= 0.35) ||
+            (features.liquiditySweepRisk !== null && features.liquiditySweepRisk >= 0.35)
+          ? '突破/反弹质量仍需回踩或二次结构确认。'
           : '当前未触发明显假突破过滤器。',
-      impactScore: features.breakoutFailureRisk === null ? 0 : -Math.round(features.breakoutFailureRisk * 5),
-      theorySource: 'docs/GOLD_TRADING_THEORY_DIGEST.md#3-技术结构与-k-线形态',
+      impactScore: -Math.round(
+        Math.max(features.breakoutFailureRisk ?? 0, features.liquiditySweepRisk ?? 0) * 5,
+      ),
+      theorySource: 'docs/reference/kline-gold-trading/KLINE_GOLD_TRADING_REPORT.md#43-假突破',
+    }),
+    buildCheck({
+      id: 'kb:chop-and-compression',
+      label: '知识库震荡/压缩过滤',
+      status: features.maWhipsawRisk !== null && features.maWhipsawRisk >= 0.75
+        ? 'block'
+        : (features.maWhipsawRisk !== null && features.maWhipsawRisk >= 0.45) ||
+            (features.rangeCompressionScore !== null && features.rangeCompressionScore >= 0.7 && nearRangeMiddle)
+          ? 'watch'
+          : 'pass',
+      reason: features.maWhipsawRisk !== null && features.maWhipsawRisk >= 0.75
+        ? '价格围绕均线反复穿越，处于高噪音震荡，不适合放大买点。'
+        : (features.maWhipsawRisk !== null && features.maWhipsawRisk >= 0.45) ||
+            (features.rangeCompressionScore !== null && features.rangeCompressionScore >= 0.7 && nearRangeMiddle)
+          ? '窄幅压缩或均线反复穿越，需等待区间突破后回踩确认。'
+          : '未触发明显震荡噪音过滤。',
+      impactScore: -Math.round(Math.max(features.maWhipsawRisk ?? 0, nearRangeMiddle ? features.rangeCompressionScore ?? 0 : 0) * 4),
+      theorySource: 'docs/reference/kline-gold-trading/sources/public-source-notes.md#2-cfa--fidelity-技术分析框架',
     }),
     buildCheck({
       id: 'kb:event-phase',
@@ -139,6 +163,8 @@ export function buildKnowledgeRuleAudit(input: {
     candidateBullish ? '候选看多形态未确认，必须等待颈线/触发价或回踩成功。' : null,
     nearRangeMiddle ? '价格处于区间中部，知识库不允许把中位震荡当强买点。' : null,
     nearHigh ? '高位追单风险触发，若继续上冲需等待回踩不破再评估。' : null,
+    features.rangeCompressionScore !== null && features.rangeCompressionScore >= 0.7 ? '窄幅整理后更容易发生假突破，必须等待收回/回踩确认。' : null,
+    features.maWhipsawRisk !== null && features.maWhipsawRisk >= 0.45 ? '均线反复穿越提示震荡噪音，短线信号需降权。' : null,
   ])
 
   return {
@@ -172,6 +198,9 @@ export function buildKnowledgeFeatureValues(input: {
     .filter((price) => Number.isFinite(price) && price > 0)
   const recent = prices.slice(-12)
   const prior = recent.slice(0, -1)
+  const structureWindow = prices.slice(-18)
+  const sweepBase = prices.slice(-18, -3)
+  const sweepProbe = prices.slice(-3)
   const priorHigh = prior.length > 0 ? Math.max(...prior) : input.latestQuote.price
   const priorLow = prior.length > 0 ? Math.min(...prior) : input.latestQuote.price
   const latest = input.latestQuote.price
@@ -202,6 +231,21 @@ export function buildKnowledgeFeatureValues(input: {
     0,
     1,
   )
+  const rangeCompressionScore = buildRangeCompressionScore(structureWindow, input.stats)
+  const liquiditySweepRisk = buildLiquiditySweepRisk({
+    latest,
+    rangePosition,
+    sweepBase,
+    sweepProbe,
+    volatility,
+  })
+  const maWhipsawRisk = buildMaWhipsawRisk(structureWindow, input.technicals.ma20)
+  const sweepReclaimScore = buildSweepReclaimScore({
+    latest,
+    rangePosition,
+    sweepBase,
+    sweepProbe,
+  })
   const pullbackQuality = rangePosition === null
     ? null
     : clamp(
@@ -228,9 +272,87 @@ export function buildKnowledgeFeatureValues(input: {
     pullbackQuality,
     supportResistanceQuality,
     macroAlignmentScore,
+    rangeCompressionScore,
+    liquiditySweepRisk,
+    maWhipsawRisk,
+    sweepReclaimScore,
     riskRewardDisciplineScore: null,
     rangePosition,
   }
+}
+
+function buildRangeCompressionScore(prices: number[], stats: QuoteStats24h) {
+  if (prices.length < 8) {
+    return null
+  }
+  const localRange = Math.max(...prices) - Math.min(...prices)
+  const dayRange = stats.high24h > stats.low24h ? stats.high24h - stats.low24h : 0
+  if (dayRange <= 0) {
+    return null
+  }
+  return clamp(1 - localRange / dayRange, 0, 1)
+}
+
+function buildLiquiditySweepRisk(input: {
+  latest: number
+  rangePosition: number | null
+  sweepBase: number[]
+  sweepProbe: number[]
+  volatility: number | null
+}) {
+  if (input.sweepBase.length < 6 || input.sweepProbe.length < 2) {
+    return null
+  }
+  const baseHigh = Math.max(...input.sweepBase)
+  const baseLow = Math.min(...input.sweepBase)
+  const probeHigh = Math.max(...input.sweepProbe)
+  const probeLow = Math.min(...input.sweepProbe)
+  const upsideSweepFailed = probeHigh > baseHigh * 1.001 && input.latest < baseHigh
+  const downsideBreakExtending = probeLow < baseLow * 0.999 && input.latest <= baseLow
+  const highLocation = input.rangePosition !== null && input.rangePosition >= 0.58
+  const volatilityPenalty = input.volatility !== null && input.volatility > 0.0035 ? 0.16 : 0
+  return clamp(
+    (upsideSweepFailed ? 0.48 : 0) +
+      (downsideBreakExtending ? 0.36 : 0) +
+      (highLocation ? 0.14 : 0) +
+      volatilityPenalty,
+    0,
+    1,
+  )
+}
+
+function buildSweepReclaimScore(input: {
+  latest: number
+  rangePosition: number | null
+  sweepBase: number[]
+  sweepProbe: number[]
+}) {
+  if (input.sweepBase.length < 6 || input.sweepProbe.length < 2) {
+    return null
+  }
+  const baseLow = Math.min(...input.sweepBase)
+  const probeLow = Math.min(...input.sweepProbe)
+  const reclaimed = probeLow < baseLow * 0.999 && input.latest > baseLow
+  const lowLocation = input.rangePosition !== null && input.rangePosition <= 0.42
+  return clamp((reclaimed ? 0.42 : 0) + (lowLocation ? 0.18 : 0), 0, 1)
+}
+
+function buildMaWhipsawRisk(prices: number[], ma20: number | null) {
+  if (prices.length < 8 || ma20 === null || ma20 <= 0) {
+    return null
+  }
+  let crosses = 0
+  let previousSide = Math.sign(prices[0] - ma20)
+  for (const price of prices.slice(1)) {
+    const side = Math.sign(price - ma20)
+    if (side !== 0 && previousSide !== 0 && side !== previousSide) {
+      crosses += 1
+    }
+    if (side !== 0) {
+      previousSide = side
+    }
+  }
+  return clamp(crosses / 5, 0, 1)
 }
 
 function buildCheck(input: KnowledgeRuleCheck): KnowledgeRuleCheck {

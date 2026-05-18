@@ -1,0 +1,5 @@
+local_path,source,type,title,url,use_case,download_status,bytes
+txt/successful-stock-speculation-gutenberg-26841.txt,Project Gutenberg,public_domain_txt,Successful Stock Speculation,https://www.gutenberg.org/cache/epub/26841/pg26841.txt,公版投机原则、风险与交易认知,downloaded,108274
+pdf/cme-gold-futures-options-fact-card.pdf,CME Group,official_pdf,Gold Futures and Options Fact Card,https://www.cmegroup.com/trading/metals/files/fact-card-gold-futures-options-sc.pdf,COMEX 黄金期货/期权合约、避险、通胀对冲,failed:<urlopen error [Errno 60] Operation timed out>,0
+data/bls-cpi-all-items-timeseries.txt,BLS,official_txt,CPI All Urban Consumers All Items time series,https://download.bls.gov/pub/time.series/cu/cu.data.1.AllItems,CPI 历史时间序列、通胀事件校验,failed:HTTP Error 403: Forbidden,0
+data/fred-gold-macro-series.csv,FRED,official_csv,DGS10 DFII10 T10YIE DTWEXBGS DEXCHUS,"https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10,DFII10,T10YIE,DTWEXBGS,DEXCHUS",实际利率、名义利率、通胀预期、美元、汇率,failed:[Errno 60] Operation timed out,0

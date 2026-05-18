@@ -271,6 +271,7 @@ export function evaluateOpportunity(input: {
     scoreCap,
     probabilityModel.primaryPrediction,
     externalModelAdvisor,
+    preTradeKnowledgeRuleAudit,
     reasons,
     risks,
   )
@@ -1205,6 +1206,7 @@ function applyProbabilityModelAdjustment(
   scoreCap: number,
   prediction: ProbabilityPrediction,
   externalModelAdvisor: ExternalModelAdvisor | null,
+  knowledgeRuleAudit: KnowledgeRuleAudit,
   reasons: string[],
   risks: string[],
 ) {
@@ -1212,7 +1214,10 @@ function applyProbabilityModelAdjustment(
   const probabilityScore = clamp(prediction.probability * 100, 0, 100)
   const blendedScore = ruleCappedScore * (1 - confidenceWeight) + probabilityScore * confidenceWeight
   const hasCalibration = prediction.sampleSize >= 20 && (prediction.brierScore === null || prediction.brierScore <= 0.24)
-  const maxBoost = hasCalibration ? 8 : 4
+  const boostedBlockedByKnowledge = knowledgeRuleAudit.checks.some((check) =>
+    check.status === 'block' && (check.id === 'kb:false-breakout' || check.id === 'kb:chop-and-compression')
+  )
+  const maxBoost = boostedBlockedByKnowledge ? 0 : hasCalibration ? 8 : 4
   const adjusted = blendedScore > ruleCappedScore
     ? Math.min(blendedScore, ruleCappedScore + maxBoost)
     : blendedScore
@@ -1228,6 +1233,9 @@ function applyProbabilityModelAdjustment(
   }
   if (prediction.sampleSize < 20) {
     risks.push('概率模型本地校准样本不足，预测已向 50% 保守收缩。')
+  }
+  if (boostedBlockedByKnowledge && blendedScore > ruleCappedScore) {
+    risks.push('知识库已触发假突破/震荡硬过滤，概率模型本轮只允许降权，不能反向抬高分数。')
   }
 
   return finalScore
@@ -1637,19 +1645,21 @@ function buildKnowledgeRuleGates(audit: KnowledgeRuleAudit): FinalDecisionGate[]
   const blocked = audit.checks.filter((check) => check.status === 'block')
   const watch = audit.checks.filter((check) => check.status === 'watch')
   if (blocked.length > 0) {
+    const reason = summarizeKnowledgeGateReasons(blocked)
     return [{
       id: 'kb:rule-pack',
       label: '知识库规则',
       status: 'block',
-      reason: `${blocked[0].label}：${blocked[0].reason}`,
+      reason,
     }]
   }
   if (watch.length > 0) {
+    const reason = summarizeKnowledgeGateReasons(watch)
     return [{
       id: 'kb:rule-pack',
       label: '知识库规则',
       status: 'watch',
-      reason: `${watch[0].label}：${watch[0].reason}`,
+      reason,
     }]
   }
   return [{
@@ -1658,6 +1668,14 @@ function buildKnowledgeRuleGates(audit: KnowledgeRuleAudit): FinalDecisionGate[]
     status: 'pass',
     reason: audit.summary,
   }]
+}
+
+function summarizeKnowledgeGateReasons(checks: KnowledgeRuleAudit['checks']) {
+  const topReasons = checks
+    .slice(0, 3)
+    .map((check) => `${check.label}：${check.reason}`)
+  const suffix = checks.length > 3 ? `；另有 ${checks.length - 3} 项待复核` : ''
+  return `${topReasons.join('；')}${suffix}`
 }
 
 function getDecisionSampleStatus(sampleSize: number): FinalDecision['sampleStatus'] {

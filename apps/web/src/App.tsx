@@ -3942,7 +3942,7 @@ function buildChartForecast(
       support: null,
       resistance: null,
       failurePrice: null,
-      successRate: patterns[0]?.confidence ?? null,
+      successRate: null,
       horizonLabel: '未来1-3个周期',
       basis: '等待足够价格样本后计算预测区间。',
     }
@@ -3979,11 +3979,11 @@ function buildChartForecast(
     support,
     resistance,
     failurePrice,
-    successRate: leadingPattern?.confidence ?? prediction.upProbability,
+    successRate: null,
     horizonLabel: '未来1-3个周期',
     basis: leadingPattern
-      ? `${leadingPattern.label} + 多因子概率校准，失效价优先于目标价。`
-      : '按窗口波动、信号概率和当前价推演，仅用于观察区间。',
+      ? `${leadingPattern.label}仅作为结构提示；暂无后端 TP1 先达校准，失效价优先于目标价。`
+      : '按窗口波动、信号概率和当前价推演，仅用于观察区间；暂无后端 TP1 先达校准。',
   }
 }
 
@@ -4002,8 +4002,8 @@ function buildChartSignal(signal: OpportunityInfo | null, prediction: ChartPredi
   if (signal?.level === 'strong' || consensusAction === 'accumulate' || prediction.upProbability >= 68) {
     return {
       tone: 'buy',
-      label: signal?.level === 'strong' ? '绝佳买点观察' : '买点增强',
-      detail: `上涨概率 ${formatProbability(prediction.upProbability)}，仍需分批和止损纪律。`,
+      label: signal?.level === 'strong' ? '强复核信号' : '买点增强',
+      detail: `TP1先达概率 ${formatProbability(prediction.upProbability)}，仍需触发价、分批和止损纪律。`,
     }
   }
 
@@ -4930,7 +4930,7 @@ function normalizeOpportunity(quote: QuotePayload | null): OpportunityInfo | nul
     cleanText(raw.title) ??
     cleanText(raw.summary) ??
     cleanText(raw.reason) ??
-    (level === 'strong' ? '绝佳买点观察' : '买点观察信号')
+    (level === 'strong' ? '强复核信号' : '买点观察信号')
 
   return {
     level,
@@ -5120,7 +5120,7 @@ function getOpportunityMeta(level: OpportunityLevel) {
   if (level === 'strong') {
     return {
       eyebrow: 'BUY SIGNAL',
-      label: '绝佳买点观察',
+      label: '强复核信号',
       tone: 'strong',
     } as const
   }
