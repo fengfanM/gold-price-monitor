@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { Pool } from 'pg'
 
 import type {
   BacktestSnapshot,
@@ -23,7 +24,7 @@ const SQLITE_FILE = process.env.SQLITE_FILE
   ? path.resolve(process.env.SQLITE_FILE)
   : path.join(DATA_DIR, 'gold-monitor.sqlite')
 const STORAGE_ADAPTER = process.env.STORAGE_ADAPTER
-  ?? (process.env.POSTGRES_HTTP_URL ? 'postgres' : 'file')
+  ?? (process.env.POSTGRES_HTTP_URL || process.env.DATABASE_URL ? 'postgres' : 'file')
 const POSTGRES_HTTP_TIMEOUT_MS = Number(process.env.POSTGRES_HTTP_TIMEOUT_MS ?? '5000')
 
 type PersistedHistory = {
@@ -347,6 +348,98 @@ class PostgresHttpHistoryStorage implements HistoryStorageAdapter {
   }
 }
 
+class PostgresDirectHistoryStorage implements HistoryStorageAdapter {
+  readonly kind = 'postgres'
+  private initialized = false
+  private readonly pool: Pool
+
+  constructor(private readonly databaseUrl = process.env.DATABASE_URL ?? '') {
+    this.pool = new Pool({
+      connectionString: databaseUrl,
+      ssl: process.env.POSTGRES_SSL === '0' ? undefined : { rejectUnauthorized: false },
+    })
+  }
+
+  async loadHistory() {
+    return this.readJson<HistoryPoint[]>('history', [])
+  }
+
+  async saveHistory(history: HistoryPoint[]) {
+    await this.writeJson('history', history)
+  }
+
+  async loadMarketContext() {
+    return this.readJson<MarketContext | null>('marketContext', null)
+  }
+
+  async saveMarketContext(marketContext: MarketContext) {
+    await this.writeJson('marketContext', marketContext)
+  }
+
+  async loadBacktestSnapshots() {
+    return this.readJson<BacktestSnapshot[]>('backtestSnapshots', [])
+  }
+
+  async saveBacktestSnapshot(snapshot: BacktestSnapshot) {
+    const existing = await this.loadBacktestSnapshots()
+    await this.writeJson('backtestSnapshots', [...existing, snapshot].slice(-1000))
+  }
+
+  async loadFactors() {
+    return this.readJson<MarketFactor[]>('factors', [])
+  }
+
+  async saveFactors(factors: MarketFactor[]) {
+    await this.writeJson('factors', factors)
+  }
+
+  async loadProviderHealthSnapshots() {
+    return this.readJson<ProviderHealthSnapshot[]>('providerHealthSnapshots', [])
+  }
+
+  async saveProviderHealthSnapshot(snapshot: ProviderHealthSnapshot) {
+    const existing = await this.loadProviderHealthSnapshots()
+    await this.writeJson('providerHealthSnapshots', [...existing, snapshot].slice(-600))
+  }
+
+  private async readJson<T>(key: string, fallback: T): Promise<T> {
+    this.assertConfigured()
+    await this.ensureTable()
+    const result = await this.pool.query('SELECT value FROM gold_monitor_kv WHERE key = $1 LIMIT 1', [key])
+    const value = result.rows?.[0]?.value
+    if (value === undefined || value === null) {
+      return fallback
+    }
+    return typeof value === 'string' ? JSON.parse(value) as T : value as T
+  }
+
+  private async writeJson(key: string, value: unknown) {
+    this.assertConfigured()
+    await this.ensureTable()
+    await this.pool.query(
+      'INSERT INTO gold_monitor_kv(key, value, updated_at) VALUES($1, $2::jsonb, now()) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
+      [key, JSON.stringify(value)],
+    )
+  }
+
+  private async ensureTable() {
+    if (this.initialized) {
+      return
+    }
+    await this.pool.query(
+      'CREATE TABLE IF NOT EXISTS gold_monitor_kv (key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz NOT NULL)',
+      [],
+    )
+    this.initialized = true
+  }
+
+  private assertConfigured() {
+    if (!this.databaseUrl) {
+      throw new Error('postgres 存储适配器需要 POSTGRES_HTTP_URL 或 DATABASE_URL。')
+    }
+  }
+}
+
 class PlannedCloudHistoryStorage implements HistoryStorageAdapter {
   readonly kind: string
 
@@ -411,7 +504,9 @@ export function createHistoryStorage(kind = STORAGE_ADAPTER): HistoryStorageAdap
   }
 
   if (kind === 'postgres') {
-    return new PostgresHttpHistoryStorage()
+    return process.env.POSTGRES_HTTP_URL
+      ? new PostgresHttpHistoryStorage()
+      : new PostgresDirectHistoryStorage()
   }
 
   if (kind === 'vercel-kv' || kind === 'upstash') {
