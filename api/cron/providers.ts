@@ -1,13 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 
+import { probeAllMarketProviders } from '../../apps/server/src/market-providers.js'
 import {
-  loadBacktestSnapshots,
+  loadProviderHealthSnapshots,
+  saveProviderHealthSnapshot,
 } from '../../apps/server/src/storage.js'
-import { getQuoteService } from '../_service.js'
-
-const DEFAULT_INGEST_REFRESH_TTL_MS = Number(
-  process.env.INGEST_REFRESH_TTL_MS ?? '60000',
-)
 
 export default async function handler(request: VercelRequest, response: VercelResponse) {
   if (request.method && !['GET', 'POST'].includes(request.method)) {
@@ -27,23 +24,19 @@ export default async function handler(request: VercelRequest, response: VercelRe
   }
 
   try {
-    const service = await getQuoteService()
-    await service.refreshIfStale(resolveRefreshTtl(request))
-
-    const backtestSnapshots = await loadBacktestSnapshots()
-    const quote = service.getQuoteResponse()
-    const history = service.getHistoryResponse()
+    const history = await loadProviderHealthSnapshots()
+    const providers = await probeAllMarketProviders()
+    const snapshot = {
+      updatedAt: new Date().toISOString(),
+      providers,
+    }
+    await saveProviderHealthSnapshot(snapshot)
 
     response.status(200).json({
       success: true,
       data: {
-        ingestedAt: new Date().toISOString(),
-        quoteTimestamp: quote.fetchedAt,
-        price: quote.price,
-        historyPoints: history.summary.pointCount,
-        trainingSamples: backtestSnapshots.length,
-        providerProbe: 'skipped',
-        providerProbeReason: 'quote ingest keeps Yahoo/FRED/CME probes on a separate low-frequency cron',
+        ...snapshot,
+        historyPoints: [...history, snapshot].slice(-300).length,
         storage: process.env.STORAGE_ADAPTER ?? (
           process.env.POSTGRES_HTTP_URL ? 'postgres' : 'file'
         ),
@@ -78,12 +71,4 @@ function isAuthorizedCronRequest(request: VercelRequest) {
   }
 
   return request.query.secret === secret
-}
-
-function resolveRefreshTtl(request: VercelRequest) {
-  if (request.query.force === '1') {
-    return 0
-  }
-
-  return DEFAULT_INGEST_REFRESH_TTL_MS
 }

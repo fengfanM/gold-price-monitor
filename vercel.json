@@ -10,6 +10,12 @@
     "api/cron/ingest.ts": {
       "maxDuration": 60
     },
+    "api/cron/providers.ts": {
+      "maxDuration": 60
+    },
+    "api/admin/backfill-history.ts": {
+      "maxDuration": 30
+    },
     "api/providers/health.ts": {
       "maxDuration": 30
     }
@@ -17,7 +23,11 @@
   "crons": [
     {
       "path": "/api/cron/ingest",
-      "schedule": "0 0 * * *"
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/providers",
+      "schedule": "17 * * * *"
     }
   ],
   "rewrites": [

@@ -4,7 +4,17 @@ import { fileURLToPath } from 'node:url'
 
 import { QuoteService } from './service.js'
 import { getProviderHealthHistory, probeAllMarketProviders } from './market-providers.js'
-import { loadProviderHealthSnapshots, saveProviderHealthSnapshot } from './storage.js'
+import {
+  loadBacktestSnapshots,
+  loadHistory,
+  loadProviderHealthSnapshots,
+  saveHistory,
+  saveProviderHealthSnapshot,
+} from './storage.js'
+import {
+  backfillHistory,
+  type BackfillInputPoint,
+} from './history-backfill.js'
 
 const PORT = Number(process.env.PORT ?? '8787')
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? '3000')
@@ -129,16 +139,7 @@ async function main() {
 
     try {
       await service.refreshIfStale(request.query.force === '1' ? 0 : undefined)
-      const [backtestSnapshotsBeforeHealth, providerHealthHistory] = await Promise.all([
-        service.getBacktestMonitor(),
-        loadProviderHealthSnapshots(),
-      ])
-      const providers = await probeAllMarketProviders()
-      const providerSnapshot = {
-        updatedAt: new Date().toISOString(),
-        providers,
-      }
-      await saveProviderHealthSnapshot(providerSnapshot)
+      const backtestSnapshots = await loadBacktestSnapshots()
       const quote = service.getQuoteResponse()
       const history = service.getHistoryResponse()
 
@@ -149,9 +150,9 @@ async function main() {
           quoteTimestamp: quote.fetchedAt,
           price: quote.price,
           historyPoints: history.summary.pointCount,
-          trainingSamples: backtestSnapshotsBeforeHealth.sampleSize,
-          providerHealth: providerSnapshot,
-          providerHealthHistoryPoints: [...providerHealthHistory, providerSnapshot].slice(-300).length,
+          trainingSamples: backtestSnapshots.length,
+          providerProbe: 'skipped',
+          providerProbeReason: 'quote ingest keeps Yahoo/FRED/CME probes on a separate low-frequency cron',
           storage: process.env.STORAGE_ADAPTER ?? (
             process.env.POSTGRES_HTTP_URL ? 'postgres' : 'file'
           ),
@@ -159,6 +160,95 @@ async function main() {
       })
     } catch (error) {
       response.status(502).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  })
+
+  app.get('/api/cron/providers', async (request, response) => {
+    if (!isAuthorizedCronRequest(request)) {
+      response.status(401).json({
+        success: false,
+        error: 'unauthorized',
+      })
+      return
+    }
+
+    try {
+      const providerHealthHistory = await loadProviderHealthSnapshots()
+      const providers = await probeAllMarketProviders()
+      const providerSnapshot = {
+        updatedAt: new Date().toISOString(),
+        providers,
+      }
+      await saveProviderHealthSnapshot(providerSnapshot)
+
+      response.json({
+        success: true,
+        data: {
+          ...providerSnapshot,
+          historyPoints: [...providerHealthHistory, providerSnapshot].slice(-300).length,
+          storage: process.env.STORAGE_ADAPTER ?? (
+            process.env.POSTGRES_HTTP_URL ? 'postgres' : 'file'
+          ),
+        },
+      })
+    } catch (error) {
+      response.status(502).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  })
+
+  app.post('/api/admin/backfill-history', express.json({ limit: '1mb' }), async (request, response) => {
+    if (!isAuthorizedAdminRequest(request)) {
+      response.status(401).json({
+        success: false,
+        error: 'unauthorized',
+      })
+      return
+    }
+
+    try {
+      const body = request.body as {
+        points?: BackfillInputPoint[]
+        history?: BackfillInputPoint[]
+        maxPoints?: number
+        windowHours?: number
+      }
+      const points = Array.isArray(body.points) ? body.points : body.history
+      if (!Array.isArray(points)) {
+        response.status(400).json({
+          success: false,
+          error: '请求体必须包含 points 或 history 数组。',
+        })
+        return
+      }
+      const existing = await loadHistory()
+      const result = backfillHistory(existing, points, {
+        maxPoints: body.maxPoints,
+        windowHours: body.windowHours,
+      })
+      await saveHistory(result.history)
+      response.json({
+        success: true,
+        data: {
+          accepted: result.accepted,
+          rejected: result.rejected,
+          beforeCount: result.beforeCount,
+          afterCount: result.afterCount,
+          firstTimestamp: result.firstTimestamp,
+          lastTimestamp: result.lastTimestamp,
+          rejectedReasons: result.rejectedReasons,
+          storage: process.env.STORAGE_ADAPTER ?? (
+            process.env.POSTGRES_HTTP_URL ? 'postgres' : 'file'
+          ),
+        },
+      })
+    } catch (error) {
+      response.status(400).json({
         success: false,
         error: error instanceof Error ? error.message : String(error),
       })
@@ -184,6 +274,10 @@ async function main() {
 }
 
 function isAuthorizedCronRequest(request: express.Request) {
+  if (process.env.VERCEL === '1' && request.headers['x-vercel-cron'] === '1') {
+    return true
+  }
+
   const secret = process.env.CRON_SECRET
   if (!secret) {
     return true
@@ -194,6 +288,23 @@ function isAuthorizedCronRequest(request: express.Request) {
   }
 
   if (request.headers['x-cron-secret'] === secret) {
+    return true
+  }
+
+  return request.query.secret === secret
+}
+
+function isAuthorizedAdminRequest(request: express.Request) {
+  const secret = process.env.BACKFILL_SECRET ?? process.env.CRON_SECRET
+  if (!secret) {
+    return process.env.NODE_ENV !== 'production'
+  }
+
+  if (request.headers.authorization === `Bearer ${secret}`) {
+    return true
+  }
+
+  if (request.headers['x-backfill-secret'] === secret || request.headers['x-cron-secret'] === secret) {
     return true
   }
 

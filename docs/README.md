@@ -14,6 +14,7 @@
 ## 运维与部署
 
 - [Production Deployment](../PRODUCTION_DEPLOYMENT.md)：Vercel、Render、Docker、Postgres Gateway 和 Chronos 服务部署。
+- [Production Data Foundation Plan](./PRODUCTION_DATA_FOUNDATION_PLAN.md)：Postgres 持久化、Cron 拆分、历史回填和线上样本积累计划。
 - [Development Plan](../DEVELOPMENT_PLAN.md)：开发阶段和路线。
 - [Reference Research Plan](../REFERENCE_RESEARCH_PLAN.md)：参考项目研究和能力迁移计划。
 

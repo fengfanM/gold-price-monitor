@@ -18,7 +18,10 @@ POSTGRES_HTTP_URL=https://your-postgres-gateway.example.com/query
 POSTGRES_HTTP_TOKEN=replace-with-strong-token
 POSTGRES_HTTP_TIMEOUT_MS=5000
 CRON_SECRET=replace-with-strong-cron-secret
+BACKFILL_SECRET=replace-with-strong-backfill-secret
 INGEST_REFRESH_TTL_MS=60000
+BACKFILL_WINDOW_HOURS=72
+BACKFILL_MAX_POINTS=5000
 FRED_API_KEY=replace-if-available
 ZHESHANG_ACCUMULATION_GOLD_URL=https://api.tangdouz.com/a/zsgold.php
 GLD_HOLDINGS_CSV_URL=https://your-official-gld-holdings-mirror.csv
@@ -45,7 +48,9 @@ GOLD_BLOGGER_RSS_URLS=https://news.google.com/rss/search?q=gold%20analyst%20outl
 - `/api/quote`、`/api/history`、`/api/snapshot`、`/api/health`：行情与基础健康检查。
 - `/api/backtest`：读取持久化的 backtest snapshots 并返回回测监控结果。
 - `/api/providers/health`：默认探测所有市场数据 provider 并保存健康快照；可用 `?probe=0` 只读历史。
-- `/api/cron/ingest`：定时入口，刷新行情快照、通过既有 `QuoteService` 持久化历史和训练样本，并保存 provider health。
+- `/api/cron/ingest`：高频行情采集入口，只刷新 quote/history/backtest，不同步探测 Yahoo/FRED/CME。
+- `/api/cron/providers`：低频 provider health 探测入口，保存 provider 健康历史。
+- `/api/admin/backfill-history`：受保护历史回填入口，用于导入最近 24-72 小时可信行情，避免新部署后图表从零开始。
 
 `vercel.json` 默认配置：
 
@@ -54,15 +59,28 @@ GOLD_BLOGGER_RSS_URLS=https://news.google.com/rss/search?q=gold%20analyst%20outl
   "crons": [
     {
       "path": "/api/cron/ingest",
-      "schedule": "0 0 * * *"
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/providers",
+      "schedule": "17 * * * *"
     }
   ]
 }
 ```
 
-生产必须设置 `CRON_SECRET`。Vercel Cron 会以 `Authorization: Bearer $CRON_SECRET` 调用；手动排查时也支持 `x-cron-secret` header 或 `?secret=`。需要立即采样可追加 `?force=1`。
+生产必须设置 `CRON_SECRET`。Vercel Cron 自身会携带 `x-vercel-cron: 1`，手动排查时支持 `Authorization: Bearer $CRON_SECRET`、`x-cron-secret` header 或 `?secret=`。需要立即采样可追加 `?force=1`。
 
-当前 Vercel Hobby 账号只允许每日 Cron，所以仓库默认使用每日保底采集。若要实现 5 分钟级或更高频率采集，请升级 Vercel Pro，或用 Render/外部定时器调用 `/api/cron/ingest`。
+如果当前 Vercel 账号不支持 5 分钟级 Cron，部署可能提示计划限制。此时保留 API 入口，用 Render Cron、GitHub Actions、UptimeRobot 或其他外部定时器每 1-5 分钟调用 `/api/cron/ingest`，每 30-60 分钟调用 `/api/cron/providers`。
+
+历史回填示例：
+
+```bash
+curl -X POST "https://your-site.vercel.app/api/admin/backfill-history" \
+  -H "content-type: application/json" \
+  -H "authorization: Bearer $BACKFILL_SECRET" \
+  --data @seed-history.json
+```
 
 ## Render 主服务模板
 
