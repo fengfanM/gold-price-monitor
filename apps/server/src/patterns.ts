@@ -71,7 +71,7 @@ function detectCandlestickPatterns(points: PricePoint[]): PatternSignal[] {
       confidence: clamp(54 + lowerShadow / range * 26 + (0.45 - rangePosition) * 18, 48, 78),
       invalidationPrice: latest.low * 0.998,
       targetPrice: latest.close + range * 1.8,
-      summary: '低位长下影显示下方承接增强，等待下一根K线继续站稳确认。',
+      summary: '低位长下影显示下方承接增强；该形态由分时价格代理K线生成，需下一根K线继续站稳确认。',
       explanation: '锤子线常见于下跌末端，代表空头打低后被多头拉回；若跌破下影低点则形态失效。',
     }))
   }
@@ -85,7 +85,7 @@ function detectCandlestickPatterns(points: PricePoint[]): PatternSignal[] {
       confidence: clamp(52 + upperShadow / range * 24 + (rangePosition - 0.55) * 18, 46, 76),
       invalidationPrice: latest.high * 1.002,
       targetPrice: latest.close - range * 1.5,
-      summary: '高位长上影显示冲高回落，追多质量下降。',
+      summary: '高位长上影显示冲高回落；该形态由分时价格代理K线生成，追多质量下降。',
       explanation: '射击之星代表上方抛压较重；若后续突破上影高点，风险信号失效。',
     }))
   }
@@ -103,7 +103,7 @@ function detectCandlestickPatterns(points: PricePoint[]): PatternSignal[] {
       confidence: clamp(58 + body / range * 18 + (0.55 - Math.min(rangePosition, 0.55)) * 12, 50, 82),
       invalidationPrice: Math.min(latest.low, previous.low) * 0.998,
       targetPrice: latest.close + range * 2,
-      summary: '最新K线反包前一根阴线，多头短线反攻增强。',
+      summary: '最新代理K线反包前一根阴线，多头短线反攻增强，但仍需后续确认。',
       explanation: '看涨吞没说明买盘覆盖上一段下跌实体；若跌破吞没低点，形态失败。',
     }))
   }
@@ -117,7 +117,7 @@ function detectCandlestickPatterns(points: PricePoint[]): PatternSignal[] {
       confidence: clamp(58 + body / range * 18 + Math.max(rangePosition - 0.45, 0) * 12, 50, 82),
       invalidationPrice: Math.max(latest.high, previous.high) * 1.002,
       targetPrice: latest.close - range * 2,
-      summary: '最新K线反包前一根阳线，短线抛压增强。',
+      summary: '最新代理K线反包前一根阳线，短线抛压增强，但仍需后续确认。',
       explanation: '看跌吞没说明卖盘覆盖上一段上涨实体；若重新突破吞没高点，风险信号失效。',
     }))
   }
@@ -172,17 +172,17 @@ function buildCandleSignal(input: {
     kind: input.kind,
     label: input.label,
     direction: input.direction,
-    confidence: Math.round(input.confidence),
-    confirmationStatus: input.kind === 'doji' ? 'candidate' : 'confirmed',
+    confidence: Math.round(input.confidence * 0.86),
+    confirmationStatus: 'candidate',
     confirmationReason: input.kind === 'doji'
       ? '十字星只代表多空犹豫，需要下一根 K 线确认方向。'
-      : '微型 K 线形态已在最新窗口内完成，但仍需价格不破失效价。',
+      : '该形态由分时价格代理 K 线生成，缺少真实成交量/OHLC 交叉确认，默认只作为候选。',
     detectedAt: input.candle.timestamp,
     keyPrice: input.candle.close,
     necklinePrice: null,
     invalidationPrice: input.invalidationPrice,
     targetPrice: input.targetPrice,
-    expectedConfirmationBars: 1,
+    expectedConfirmationBars: 2,
     summary: input.summary,
     explanation: input.explanation,
   }

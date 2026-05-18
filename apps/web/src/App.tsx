@@ -284,6 +284,8 @@ type OpportunityPayload = {
   eventRisk?: EconomicEventRisk | null
   psychology?: PsychologyDiscipline | null
   externalModelAdvisor?: ExternalModelAdvisor | null
+  canonicalForecast?: CanonicalForecast | null
+  decisionOverlay?: DecisionOverlay | null
 }
 
 type OpportunityInfo = {
@@ -303,6 +305,8 @@ type OpportunityInfo = {
   eventRisk: EconomicEventRisk | null
   psychology: PsychologyDiscipline | null
   externalModelAdvisor: ExternalModelAdvisor | null
+  canonicalForecast: CanonicalForecast | null
+  decisionOverlay: DecisionOverlay | null
 }
 
 type ExternalModelAdvisor = {
@@ -327,6 +331,77 @@ type ExternalModelAdvisor = {
     weightMultiplier: number
   } | null
   competitors?: ExternalModelAdvisor[]
+}
+
+type PriceLevel = {
+  price: number
+  role: 'support' | 'resistance' | 'trigger' | 'stopLoss' | 'invalidation' | 'takeProfit'
+  source: 'tradePlan' | 'patternSignal' | 'externalModel' | 'stats24h' | 'technical' | 'probabilityModel'
+  confidence: number | null
+  note: string
+}
+
+type CanonicalForecast = {
+  version: 'canonical-forecast-v1'
+  generatedAt: string
+  horizonMinutes: number
+  anchorPrice: number
+  unit: string
+  probability: {
+    up: number
+    down: number
+    label: 'TP1_BEFORE_STOP'
+    confidence: number
+    sampleSize: number
+    brierScore: number | null
+    source: 'probabilityModel.primaryPrediction' | 'externalModelAdvisor'
+  }
+  priceInterval: {
+    low: number | null
+    high: number | null
+    median: number | null
+    source: 'externalModel' | 'backendDerived'
+    basis: string
+  }
+  levels: {
+    support: PriceLevel | null
+    resistance: PriceLevel | null
+    entryZone: { low: number; high: number } | null
+    trigger: PriceLevel | null
+    stopLoss: PriceLevel | null
+    invalidation: PriceLevel | null
+    targets: PriceLevel[]
+  }
+  successRate: {
+    value: number | null
+    source: 'probabilityModel' | 'backtestBucket' | 'unavailable'
+    label: string
+  }
+  primaryPatternId: string | null
+  primaryPatternLabel: string | null
+  warnings: string[]
+}
+
+type DecisionOverlay = {
+  version: string
+  generatedAt: string
+  source: 'external_model' | 'local_probability' | 'trade_plan' | 'pattern_structure'
+  horizonMinutes: number
+  horizonLabel: string
+  upProbability: number
+  downProbability: number
+  confidence: number
+  intervalLow: number | null
+  intervalHigh: number | null
+  support: number | null
+  resistance: number | null
+  failurePrice: number | null
+  targetPrice: number | null
+  primaryPatternId: string | null
+  primaryPatternLabel: string | null
+  patternConfidence: number | null
+  basis: string
+  warnings: string[]
 }
 
 type EconomicEvent = {
@@ -490,7 +565,7 @@ type QuotePayload = {
 
 type PatternSignal = {
   id: string
-  kind: 'double_bottom' | 'double_top' | 'support_rebound' | 'resistance_rejection'
+  kind: 'double_bottom' | 'double_top' | 'support_rebound' | 'resistance_rejection' | 'hammer' | 'shooting_star' | 'bullish_engulfing' | 'bearish_engulfing' | 'doji'
   label: string
   direction: 'bullish' | 'bearish' | 'neutral'
   confidence: number
@@ -3502,8 +3577,8 @@ function ChartSignalStrip(props: {
         </strong>
         <small>
           {leadingPattern
-            ? `${leadingPattern.label} 成功率 ${formatProbability(leadingPattern.confidence)}，失效价 ${formatMaybePrice(props.forecast.failurePrice)}。`
-            : `失败价 ${formatMaybePrice(props.forecast.failurePrice)}；图中虚线标出预测区间和关键价。`}
+            ? `${leadingPattern.label} 识别置信 ${formatProbability(leadingPattern.confidence)}，TP1先达 ${formatMaybeProbability(props.forecast.successRate)}，失效价 ${formatMaybePrice(props.forecast.failurePrice)}。`
+            : `TP1先达 ${formatMaybeProbability(props.forecast.successRate)}；图中虚线标出统一预测区间和关键价。`}
         </small>
       </div>
     </div>
@@ -3521,7 +3596,7 @@ function PatternSignalPanel(props: { patterns: PatternSignal[] }) {
         <article className={`pattern-card pattern-card--${pattern.direction}`} key={pattern.id}>
           <header>
             <strong>{pattern.label}</strong>
-            <span>成功率 {pattern.confidence}%</span>
+            <span>识别置信 {pattern.confidence}%</span>
           </header>
           <p>{pattern.summary}</p>
           <div>
@@ -3781,6 +3856,15 @@ function buildChartPrediction(
   signal: OpportunityInfo | null,
   monitor: BacktestMonitor | null,
 ): ChartPrediction {
+  if (signal?.canonicalForecast) {
+    return {
+      upProbability: Math.round(signal.canonicalForecast.probability.up * 100),
+      downProbability: Math.round(signal.canonicalForecast.probability.down * 100),
+      confidence: signal.canonicalForecast.probability.confidence,
+      label: '统一预测',
+      basis: signal.canonicalForecast.successRate.label,
+    }
+  }
   const normalizedScore = normalizeScoreNumber(signal?.score) ?? 50
   const factorScore = normalizeScoreNumber(signal?.marketContext?.factorScore) ?? 50
   const valuationScore = normalizeScoreNumber(signal?.valuation?.score) ?? 50
@@ -3837,6 +3921,19 @@ function buildChartForecast(
   patterns: PatternSignal[],
   opportunity: OpportunityInfo | null,
 ): ChartForecast {
+  if (opportunity?.canonicalForecast) {
+    const forecast = opportunity.canonicalForecast
+    return {
+      intervalLow: forecast.priceInterval.low,
+      intervalHigh: forecast.priceInterval.high,
+      support: forecast.levels.support?.price ?? null,
+      resistance: forecast.levels.resistance?.price ?? null,
+      failurePrice: forecast.levels.invalidation?.price ?? forecast.levels.stopLoss?.price ?? null,
+      successRate: forecast.successRate.value === null ? null : Math.round(forecast.successRate.value * 100),
+      horizonLabel: `${forecast.horizonMinutes}分钟`,
+      basis: forecast.priceInterval.basis,
+    }
+  }
   const anchor = latestPrice ?? extremes.low?.value ?? extremes.high?.value ?? null
   if (anchor === null) {
     return {
@@ -4803,6 +4900,13 @@ function formatProbability(value: number) {
   return `${Math.round(value)}%`
 }
 
+function formatMaybeProbability(value: number | null) {
+  if (value === null || !Number.isFinite(value)) {
+    return '--'
+  }
+  return formatProbability(value)
+}
+
 function normalizeScoreNumber(value: number | null | undefined) {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return null
@@ -4845,7 +4949,23 @@ function normalizeOpportunity(quote: QuotePayload | null): OpportunityInfo | nul
     eventRisk: normalizeEventRisk(raw.eventRisk),
     psychology: normalizePsychology(raw.psychology),
     externalModelAdvisor: raw.externalModelAdvisor ?? null,
+    canonicalForecast: normalizeCanonicalForecast(raw.canonicalForecast),
+    decisionOverlay: normalizeDecisionOverlay(raw.decisionOverlay),
   }
+}
+
+function normalizeCanonicalForecast(value: CanonicalForecast | null | undefined) {
+  if (!value || value.version !== 'canonical-forecast-v1' || typeof value.anchorPrice !== 'number') {
+    return null
+  }
+  return value
+}
+
+function normalizeDecisionOverlay(value: DecisionOverlay | null | undefined) {
+  if (!value || typeof value.version !== 'string' || typeof value.horizonMinutes !== 'number') {
+    return null
+  }
+  return value
 }
 
 function normalizePsychology(value: PsychologyDiscipline | null | undefined) {

@@ -100,6 +100,8 @@ describe('chart pattern detection', () => {
     assert.equal(Boolean(engulfing), true)
     assert.equal(engulfing?.direction, 'bullish')
     assert.equal(typeof engulfing?.invalidationPrice, 'number')
+    assert.equal(engulfing?.confirmationStatus, 'candidate')
+    assert.equal(engulfing?.confirmationReason?.includes('代理 K 线'), true)
   })
 
   it('detects doji as a neutral decision candle instead of a strong signal', () => {

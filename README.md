@@ -32,6 +32,7 @@ Gold Price Monitor 的目标就是把这些问题变成一套清晰、可复盘�
 | 本地概率模型 | `rules-calibrated-logit-triple-barrier-v1`，输出 `5m / 15m / 60m / 240m` TP1 先达概率 | 这是规则校准 logit + 路径标签，不是深度学习训练模型 |
 | 买点评分 | 技术、形态、估值、宏观、事件、心理纪律、交易计划和回测共同影响分数与上限 | 分数不是买入指令 |
 | 知识库规则包 | `gold-kb-rule-pack-v1`，审校趋势结构、形态位置、假突破、事件阶段和赔率纪律 | 规则包用于拦截误判，不保证 100% 正确 |
+| 统一预测口径 | `canonicalForecast`，统一图上预测区间、TP1先达概率、支撑/压力、止损和目标 | 前端不再自行把形态置信度当成功率 |
 | 外部军师 | `EXTERNAL_TS_MODEL_URL` / `EXTERNAL_TS_MODEL_ENDPOINTS` HTTP 接口，支持多 provider schema | 接口支持不等于所有 provider 已生产稳定运行 |
 | Chronos-Bolt | 可选本地 Chronos-Bolt 推理服务，已做过真实模型联调 | 当前不能宣传为已验证高准确率交易模型 |
 | 回测 gate | 策略桶和外部模型桶，统计胜率、超额胜率、PF、Brier、MAE、回撤 | historical 不能直接污染 live gate |
@@ -201,6 +202,10 @@ EXTERNAL_TS_MODEL_CONTEXT_POINTS=256
 | `timeout` | 数据路径不足，不能完整评价 |
 
 这让“胜率”更接近真实交易体验：同样是最终上涨，如果中途先打止损，就不能算成功。
+
+### Canonical Forecast
+
+前端图表和关键价位现在优先消费后端 `canonicalForecast`，避免“顶部卡片、右侧价格线、底部形态卡片各算一套”。唯一概率口径是 `TP1_BEFORE_STOP`，也就是 TP1 先达概率；形态 `confidence` 只表示识别置信，不再展示为成功率。
 
 ### Historical, Paper, Live and Production Separation
 

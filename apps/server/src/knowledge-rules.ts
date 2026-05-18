@@ -50,6 +50,7 @@ export function buildKnowledgeRuleAudit(input: {
           ? '短线趋势结构仍偏弱，不能把反弹直接当成反转。'
           : '趋势结构仍未完成二次确认。',
       impactScore: features.trendStructureScore !== null ? Math.round(features.trendStructureScore * 4) : 0,
+      theorySource: 'docs/GOLD_TRADING_THEORY_DIGEST.md#3-技术结构与-k-线形态',
     }),
     buildCheck({
       id: 'kb:pattern-location',
@@ -69,6 +70,7 @@ export function buildKnowledgeRuleAudit(input: {
             ? '存在看多候选形态，但尚未完成关键位确认。'
             : '暂无清晰低位形态位置优势。',
       impactScore: confirmedBullish && !nearHigh ? 3 : nearHigh ? -4 : 0,
+      theorySource: 'docs/GOLD_PRECIOUS_METALS_EXPERT_KNOWLEDGE_BASE.md#5-黄金技术分析体系',
     }),
     buildCheck({
       id: 'kb:false-breakout',
@@ -84,6 +86,7 @@ export function buildKnowledgeRuleAudit(input: {
           ? '突破/反弹质量仍需回踩确认。'
           : '当前未触发明显假突破过滤器。',
       impactScore: features.breakoutFailureRisk === null ? 0 : -Math.round(features.breakoutFailureRisk * 5),
+      theorySource: 'docs/GOLD_TRADING_THEORY_DIGEST.md#3-技术结构与-k-线形态',
     }),
     buildCheck({
       id: 'kb:event-phase',
@@ -95,6 +98,7 @@ export function buildKnowledgeRuleAudit(input: {
           ? '事件观察窗口内只能等待二次确认。'
           : '未处于重大事件第一波冲击窗口。',
       impactScore: eventBlocked ? -8 : input.eventRisk.level === 'watch' ? -3 : 1,
+      theorySource: 'docs/GOLD_TRADING_THEORY_DIGEST.md#1-宏观经济与黄金大环境',
     }),
     buildCheck({
       id: 'kb:risk-reward-discipline',
@@ -114,6 +118,7 @@ export function buildKnowledgeRuleAudit(input: {
             ? `风险收益比 ${tradePlan.riskRewardRatio}:1，只能观察或轻仓。`
             : '风险收益比不足 2:1，知识库禁止强提醒。',
       impactScore: !tradePlan ? 0 : tradePlan.riskRewardRatio !== null && tradePlan.riskRewardRatio >= 2.5 ? 2 : -4,
+      theorySource: 'docs/GOLD_TRADING_THEORY_DIGEST.md#4-概率交易与回测',
     }),
   ]
 

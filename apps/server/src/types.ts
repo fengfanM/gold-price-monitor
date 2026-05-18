@@ -503,6 +503,7 @@ export type KnowledgeRuleCheck = {
   status: KnowledgeRuleStatus
   reason: string
   impactScore: number
+  theorySource?: string
 }
 
 export type KnowledgeRuleAudit = {
@@ -577,6 +578,99 @@ export type FinalDecision = {
   confidenceExplanation: string
   accuracyExplanation: string
   sampleStatus: 'insufficient' | 'warming_up' | 'usable' | 'robust'
+}
+
+export type DecisionOverlaySource =
+  | 'external_model'
+  | 'local_probability'
+  | 'trade_plan'
+  | 'pattern_structure'
+
+export type DecisionOverlay = {
+  version: string
+  generatedAt: string
+  source: DecisionOverlaySource
+  horizonMinutes: number
+  horizonLabel: string
+  upProbability: number
+  downProbability: number
+  confidence: number
+  intervalLow: number | null
+  intervalHigh: number | null
+  support: number | null
+  resistance: number | null
+  failurePrice: number | null
+  targetPrice: number | null
+  primaryPatternId: string | null
+  primaryPatternLabel: string | null
+  patternConfidence: number | null
+  basis: string
+  warnings: string[]
+}
+
+export type PriceLevelRole =
+  | 'support'
+  | 'resistance'
+  | 'trigger'
+  | 'stopLoss'
+  | 'invalidation'
+  | 'takeProfit'
+
+export type PriceLevelSource =
+  | 'tradePlan'
+  | 'patternSignal'
+  | 'externalModel'
+  | 'stats24h'
+  | 'technical'
+  | 'probabilityModel'
+
+export type PriceLevel = {
+  price: number
+  role: PriceLevelRole
+  source: PriceLevelSource
+  confidence: number | null
+  note: string
+}
+
+export type CanonicalForecast = {
+  version: 'canonical-forecast-v1'
+  generatedAt: string
+  horizonMinutes: number
+  anchorPrice: number
+  unit: string
+  probability: {
+    up: number
+    down: number
+    label: 'TP1_BEFORE_STOP'
+    confidence: number
+    sampleSize: number
+    brierScore: number | null
+    source: 'probabilityModel.primaryPrediction' | 'externalModelAdvisor'
+  }
+  priceInterval: {
+    low: number | null
+    high: number | null
+    median: number | null
+    source: 'externalModel' | 'backendDerived'
+    basis: string
+  }
+  levels: {
+    support: PriceLevel | null
+    resistance: PriceLevel | null
+    entryZone: { low: number; high: number } | null
+    trigger: PriceLevel | null
+    stopLoss: PriceLevel | null
+    invalidation: PriceLevel | null
+    targets: PriceLevel[]
+  }
+  successRate: {
+    value: number | null
+    source: 'probabilityModel' | 'backtestBucket' | 'unavailable'
+    label: string
+  }
+  primaryPatternId: string | null
+  primaryPatternLabel: string | null
+  warnings: string[]
 }
 
 export type EconomicEventImportance = 'S' | 'A' | 'B'
@@ -727,6 +821,8 @@ export type OpportunitySignal = {
   patternSignals: PatternSignal[]
   probabilityModel: ProbabilityModelSnapshot
   knowledgeRuleAudit: KnowledgeRuleAudit
+  canonicalForecast: CanonicalForecast
+  decisionOverlay: DecisionOverlay
   finalDecision: FinalDecision
   tradePlan: TradePlan
   confluence: MultiTimeframeConfluence

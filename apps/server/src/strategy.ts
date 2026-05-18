@@ -6,6 +6,8 @@ import {
   predictProbabilityModel,
 } from './model.js'
 import type {
+  CanonicalForecast,
+  DecisionOverlay,
   EconomicEventRisk,
   ExpertAction,
   ExpertConsensus,
@@ -338,6 +340,23 @@ export function evaluateOpportunity(input: {
     sourceStatus,
     tradePlan,
   })
+  const canonicalForecast = buildCanonicalForecast({
+    externalModelAdvisor,
+    finalDecision,
+    latestQuote,
+    patternSignals,
+    probabilityModel,
+    stats,
+    technicals,
+    tradePlan,
+  })
+  const decisionOverlay = buildDecisionOverlay({
+    canonicalForecast,
+    finalDecision,
+    finalScore,
+    level: finalDecision.strongReminderAllowed ? 'strong' : finalScore >= 45 ? 'watch' : 'none',
+    tradePlan,
+  })
   const level = finalDecision.strongReminderAllowed ? 'strong' : finalScore >= 45 ? 'watch' : 'none'
   const expertOpinions = buildExpertOpinions({
     externalModelAdvisor,
@@ -369,6 +388,8 @@ export function evaluateOpportunity(input: {
     patternSignals,
     probabilityModel,
     knowledgeRuleAudit,
+    canonicalForecast,
+    decisionOverlay,
     finalDecision,
     tradePlan,
     confluence,
@@ -376,6 +397,278 @@ export function evaluateOpportunity(input: {
     psychology,
     computedAt: new Date().toISOString(),
   }
+}
+
+function buildCanonicalForecast(input: {
+  externalModelAdvisor: ExternalModelAdvisor | null
+  finalDecision: FinalDecision
+  latestQuote: QuoteSample
+  patternSignals: PatternSignal[]
+  probabilityModel: OpportunitySignal['probabilityModel']
+  stats: QuoteApiResponse['stats24h']
+  technicals: TechnicalSnapshot
+  tradePlan: TradePlan
+}): CanonicalForecast {
+  const {
+    externalModelAdvisor,
+    finalDecision,
+    latestQuote,
+    patternSignals,
+    probabilityModel,
+    stats,
+    technicals,
+    tradePlan,
+  } = input
+  const price = latestQuote.price
+  const prediction = probabilityModel.primaryPrediction
+  const usableExternal =
+    externalModelAdvisor?.status === 'live' &&
+    externalModelAdvisor.backtestGate?.status !== 'weak' &&
+    externalModelAdvisor.upProbability !== null
+  const primaryPattern = selectPrimaryOverlayPattern(patternSignals, finalDecision)
+  const support = buildPriceLevel(
+    chooseNearestBelow([
+      primaryPattern?.direction === 'bullish' ? primaryPattern.keyPrice : null,
+      tradePlan.entryZone?.low ?? null,
+      technicals.ma20,
+      stats.low24h > 0 ? stats.low24h : null,
+    ], price),
+    'support',
+    primaryPattern?.direction === 'bullish' ? 'patternSignal' : tradePlan.entryZone ? 'tradePlan' : 'stats24h',
+    primaryPattern?.confidence ?? null,
+    '低位结构/交易计划/日内低点合并后的统一支撑口径。',
+  )
+  const resistance = buildPriceLevel(
+    chooseNearestAbove([
+      primaryPattern?.direction === 'bearish' ? primaryPattern.keyPrice : null,
+      primaryPattern?.necklinePrice,
+      stats.high24h > 0 ? stats.high24h : null,
+      technicals.ma20,
+    ], price),
+    'resistance',
+    primaryPattern?.direction === 'bearish' ? 'patternSignal' : 'stats24h',
+    primaryPattern?.direction === 'bearish' ? primaryPattern.confidence : null,
+    '形态压力/日内高点/技术均线合并后的统一压力口径。',
+  )
+  const trigger = buildPriceLevel(
+    tradePlan.triggerPrice,
+    'trigger',
+    'tradePlan',
+    null,
+    '交易计划触发价，不再混同为压力位。',
+  )
+  const stopLoss = buildPriceLevel(
+    tradePlan.stopLoss,
+    'stopLoss',
+    'tradePlan',
+    null,
+    '交易计划止损价，是图上主失效线的优先口径。',
+  )
+  const patternInvalidation = buildPriceLevel(
+    primaryPattern?.invalidationPrice ?? null,
+    'invalidation',
+    'patternSignal',
+    primaryPattern?.confidence ?? null,
+    '形态自身失效价，仅作为止损之外的结构复核。',
+  )
+  const targets = [
+    buildPriceLevel(tradePlan.takeProfit1, 'takeProfit', 'tradePlan', null, '交易计划 TP1。'),
+    buildPriceLevel(tradePlan.takeProfit2, 'takeProfit', 'tradePlan', null, '交易计划 TP2。'),
+    buildPriceLevel(primaryPattern?.targetPrice ?? null, 'takeProfit', 'patternSignal', primaryPattern?.confidence ?? null, '形态理论目标位。'),
+  ].filter((level): level is NonNullable<typeof level> => level !== null)
+  const derivedInterval = buildCanonicalInterval({
+    price,
+    prediction,
+    stats,
+    support: support?.price ?? null,
+    resistance: resistance?.price ?? null,
+    stopLoss: stopLoss?.price ?? patternInvalidation?.price ?? null,
+    target: targets[0]?.price ?? null,
+  })
+  const externalHasInterval = usableExternal &&
+    externalModelAdvisor.intervalLow !== null &&
+    externalModelAdvisor.intervalHigh !== null
+  const intervalLow = externalHasInterval ? externalModelAdvisor.intervalLow : derivedInterval.low
+  const intervalHigh = externalHasInterval ? externalModelAdvisor.intervalHigh : derivedInterval.high
+  const median = usableExternal && externalModelAdvisor.forecastPrice !== null
+    ? externalModelAdvisor.forecastPrice
+    : price + (prediction.probability - 0.5) * Math.max(price * 0.006, Math.abs((intervalHigh ?? price) - (intervalLow ?? price)) * 0.25)
+  const up = clamp(
+    usableExternal && externalModelAdvisor.upProbability !== null
+      ? externalModelAdvisor.upProbability
+      : prediction.probability,
+    0.01,
+    0.99,
+  )
+
+  return {
+    version: 'canonical-forecast-v1',
+    generatedAt: new Date().toISOString(),
+    horizonMinutes: usableExternal ? externalModelAdvisor.horizonMinutes : prediction.horizonMinutes,
+    anchorPrice: price,
+    unit: latestQuote.unit,
+    probability: {
+      up: roundProbability(up),
+      down: roundProbability(1 - up),
+      label: 'TP1_BEFORE_STOP',
+      confidence: Math.round(clamp(usableExternal ? externalModelAdvisor.confidence : prediction.confidence, 1, 99)),
+      sampleSize: prediction.sampleSize,
+      brierScore: prediction.brierScore,
+      source: usableExternal ? 'externalModelAdvisor' : 'probabilityModel.primaryPrediction',
+    },
+    priceInterval: {
+      low: roundNullablePrice(intervalLow),
+      high: roundNullablePrice(intervalHigh),
+      median: roundNullablePrice(median),
+      source: externalHasInterval ? 'externalModel' : 'backendDerived',
+      basis: externalHasInterval
+        ? '采用通过弱桶过滤的外部时序模型区间，并受本地风控门控约束。'
+        : '采用后端统一口径：TP1路径概率、交易计划、形态结构、日内波动共同推导。',
+    },
+    levels: {
+      support,
+      resistance,
+      entryZone: tradePlan.entryZone,
+      trigger,
+      stopLoss,
+      invalidation: stopLoss ?? patternInvalidation,
+      targets,
+    },
+    successRate: {
+      value: roundProbability(prediction.probability),
+      source: 'probabilityModel',
+      label: 'TP1 先达概率，不再使用形态识别置信度冒充成功率。',
+    },
+    primaryPatternId: primaryPattern?.id ?? null,
+    primaryPatternLabel: primaryPattern?.label ?? null,
+    warnings: compact([
+      finalDecision.strongReminderAllowed ? null : '强提醒未放行，图上价位只用于观察和复核。',
+      primaryPattern && !isConfirmedPattern(primaryPattern) ? '主形态仍是候选，必须等待触发价/颈线/回踩确认。' : null,
+    ]),
+  }
+}
+
+function buildDecisionOverlay(input: {
+  canonicalForecast: CanonicalForecast
+  finalDecision: FinalDecision
+  finalScore: number
+  level: OpportunitySignal['level']
+  tradePlan: TradePlan
+}): DecisionOverlay {
+  const { canonicalForecast, finalDecision, finalScore, level, tradePlan } = input
+  const source: DecisionOverlay['source'] = canonicalForecast.priceInterval.source === 'externalModel'
+    ? 'external_model'
+    : tradePlan.entryZone
+      ? 'trade_plan'
+      : canonicalForecast.primaryPatternId
+        ? 'pattern_structure'
+        : 'local_probability'
+  return {
+    version: 'decision-overlay-v1',
+    generatedAt: canonicalForecast.generatedAt,
+    source,
+    horizonMinutes: canonicalForecast.horizonMinutes,
+    horizonLabel: `${canonicalForecast.horizonMinutes}分钟 TP1路径`,
+    upProbability: Math.round(canonicalForecast.probability.up * 100),
+    downProbability: Math.round(canonicalForecast.probability.down * 100),
+    confidence: canonicalForecast.probability.confidence,
+    intervalLow: canonicalForecast.priceInterval.low,
+    intervalHigh: canonicalForecast.priceInterval.high,
+    support: canonicalForecast.levels.support?.price ?? null,
+    resistance: canonicalForecast.levels.resistance?.price ?? null,
+    failurePrice: canonicalForecast.levels.invalidation?.price ?? null,
+    targetPrice: canonicalForecast.levels.targets[0]?.price ?? null,
+    primaryPatternId: canonicalForecast.primaryPatternId,
+    primaryPatternLabel: canonicalForecast.primaryPatternLabel,
+    patternConfidence: null,
+    basis: canonicalForecast.priceInterval.basis,
+    warnings: compact([
+      ...canonicalForecast.warnings,
+      finalDecision.userAdvice,
+      `最终等级 ${level}，策略分 ${finalScore}/100。`,
+    ]),
+  }
+}
+
+function buildPriceLevel(
+  price: number | null | undefined,
+  role: NonNullable<CanonicalForecast['levels']['support']>['role'],
+  source: NonNullable<CanonicalForecast['levels']['support']>['source'],
+  confidence: number | null,
+  note: string,
+) {
+  if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) {
+    return null
+  }
+  return {
+    price: roundPrice(price),
+    role,
+    source,
+    confidence,
+    note,
+  }
+}
+
+function selectPrimaryOverlayPattern(patterns: PatternSignal[], finalDecision: FinalDecision) {
+  const confirmedBullish = patterns.find((pattern) => pattern.direction === 'bullish' && isConfirmedPattern(pattern))
+  if (finalDecision.action === 'reduce' || finalDecision.action === 'avoid') {
+    return patterns.find((pattern) => pattern.direction === 'bearish') ?? confirmedBullish ?? patterns[0] ?? null
+  }
+  return confirmedBullish ??
+    patterns.find((pattern) => pattern.direction === 'bullish') ??
+    patterns.find((pattern) => pattern.direction === 'bearish') ??
+    patterns[0] ??
+    null
+}
+
+function buildCanonicalInterval(input: {
+  price: number
+  prediction: ProbabilityPrediction
+  resistance: number | null
+  stats: QuoteApiResponse['stats24h']
+  stopLoss: number | null
+  support: number | null
+  target: number | null
+}) {
+  const rangeMove = input.stats.high24h > input.stats.low24h
+    ? (input.stats.high24h - input.stats.low24h) * 0.22
+    : 0
+  const baseMove = Math.max(input.price * 0.0022, rangeMove, input.price * 0.0035)
+  const skew = (input.prediction.probability - 0.5) * input.price * 0.004
+  const rawLow = input.price - baseMove + Math.min(skew, 0)
+  const rawHigh = input.price + baseMove + Math.max(skew, 0)
+  return {
+    low: Math.min(
+      rawLow,
+      input.support ?? rawLow,
+      input.stopLoss !== null ? input.stopLoss + Math.abs(input.price - input.stopLoss) * 0.35 : rawLow,
+    ),
+    high: Math.max(
+      rawHigh,
+      input.resistance ?? rawHigh,
+      input.target !== null ? input.target - Math.abs(input.target - input.price) * 0.35 : rawHigh,
+    ),
+  }
+}
+
+function chooseNearestBelow(values: Array<number | null | undefined>, anchor: number) {
+  return values
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value <= anchor * 1.001)
+    .sort((left, right) => right - left)[0] ?? null
+}
+
+function chooseNearestAbove(values: Array<number | null | undefined>, anchor: number) {
+  return values
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= anchor * 0.999)
+    .sort((left, right) => left - right)[0] ?? null
+}
+
+function roundNullablePrice(value: number | null | undefined) {
+  return typeof value === 'number' && Number.isFinite(value) ? roundPrice(value) : null
+}
+
+function roundProbability(value: number) {
+  return Math.round(clamp(value, 0, 1) * 1000) / 1000
 }
 
 function buildValuationMetrics(
