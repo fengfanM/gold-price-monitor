@@ -439,6 +439,7 @@ export type PatternKind =
   | 'doji'
 
 export type PatternDirection = 'bullish' | 'bearish' | 'neutral'
+export type PatternConfirmationStatus = 'candidate' | 'confirmed'
 
 export type PatternSignal = {
   id: string
@@ -446,6 +447,8 @@ export type PatternSignal = {
   label: string
   direction: PatternDirection
   confidence: number
+  confirmationStatus?: PatternConfirmationStatus
+  confirmationReason?: string
   detectedAt: string
   keyPrice: number
   necklinePrice: number | null
@@ -484,6 +487,37 @@ export type TradePlan = {
   invalidation: string
   rationale: string[]
   warnings: string[]
+}
+
+export type FinalDecisionAction =
+  | 'avoid'
+  | 'wait'
+  | 'watch'
+  | 'probe'
+  | 'confirm_then_enter'
+  | 'reduce'
+
+export type FinalDecisionGate = {
+  id: string
+  label: string
+  status: 'pass' | 'watch' | 'block'
+  reason: string
+}
+
+export type FinalDecision = {
+  action: FinalDecisionAction
+  actionLabel: string
+  signalGrade: 'blocked' | 'low' | 'watch' | 'qualified' | 'strong_watch'
+  strongReminderAllowed: boolean
+  userAdvice: string
+  beginnerAdvice: string
+  blockedReasons: string[]
+  downgradeReasons: string[]
+  hardGates: FinalDecisionGate[]
+  confidenceGrade: 'unverified' | 'low' | 'medium' | 'high'
+  confidenceExplanation: string
+  accuracyExplanation: string
+  sampleStatus: 'insufficient' | 'warming_up' | 'usable' | 'robust'
 }
 
 export type EconomicEventImportance = 'S' | 'A' | 'B'
@@ -633,6 +667,7 @@ export type OpportunitySignal = {
   valuation: ValuationMetrics
   patternSignals: PatternSignal[]
   probabilityModel: ProbabilityModelSnapshot
+  finalDecision: FinalDecision
   tradePlan: TradePlan
   confluence: MultiTimeframeConfluence
   eventRisk: EconomicEventRisk

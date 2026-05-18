@@ -96,6 +96,12 @@ describe('opportunity strategy engine', () => {
 
     assert.equal(riskOfficer?.stance, 'risk_off')
     assert.equal(signal.expertConsensus.summary.includes('偏谨慎'), true)
+    assert.equal(signal.finalDecision.strongReminderAllowed, false)
+    assert.equal(signal.finalDecision.action, 'avoid')
+    assert.equal(
+      signal.finalDecision.hardGates.some((gate) => gate.id === 'data-health' && gate.status === 'block'),
+      true,
+    )
   })
 
   it('downgrades opportunity when multi-source macro factors are under pressure', () => {
@@ -195,6 +201,13 @@ describe('opportunity strategy engine', () => {
 
     assert.equal(signal.patternSignals.length, 1)
     assert.equal(signal.reasons.some((item) => item.includes('疑似双底')), true)
+    assert.equal(signal.risks.some((item) => item.includes('尚未确认')), true)
+    assert.equal(signal.reasons.some((item) => item.includes('需要先确认')), true)
+    assert.equal(signal.finalDecision.strongReminderAllowed, false)
+    assert.equal(
+      signal.finalDecision.hardGates.some((gate) => gate.id === 'pattern-confirmation' && gate.status === 'watch'),
+      true,
+    )
   })
 
   it('builds an executable trade plan with risk reward and invalidation rules', () => {
@@ -294,6 +307,11 @@ describe('opportunity strategy engine', () => {
     assert.equal(signal.risks.some((item) => item.includes('重大事件风控')), true)
     assert.equal(signal.tradePlan.maxPositionPercent <= 1, true)
     assert.equal(signal.tradePlan.rationale.some((item) => item.includes('事件风控仓位系数')), true)
+    assert.equal(signal.finalDecision.strongReminderAllowed, false)
+    assert.equal(
+      signal.finalDecision.hardGates.some((gate) => gate.id === 'event-risk' && gate.status === 'block'),
+      true,
+    )
   })
 
   it('flags chasing-high psychology risk and prevents strong escalation', () => {

@@ -21,8 +21,29 @@ describe('chart pattern detection', () => {
 
     assert.equal(Boolean(doubleBottom), true)
     assert.equal(doubleBottom?.direction, 'bullish')
+    assert.equal(doubleBottom?.confirmationStatus, 'candidate')
     assert.equal(typeof doubleBottom?.necklinePrice, 'number')
     assert.equal(typeof doubleBottom?.invalidationPrice, 'number')
+  })
+
+  it('marks double bottom as confirmed only after neckline is reclaimed', () => {
+    const history = [
+      makeHistoryPoint('2026-05-16T09:49:00.000Z', 590),
+      makeHistoryPoint('2026-05-16T09:50:00.000Z', 582),
+      makeHistoryPoint('2026-05-16T09:51:00.000Z', 589),
+      makeHistoryPoint('2026-05-16T09:52:00.000Z', 586),
+      makeHistoryPoint('2026-05-16T09:53:00.000Z', 581.8),
+      makeHistoryPoint('2026-05-16T09:54:00.000Z', 586),
+      makeHistoryPoint('2026-05-16T09:55:00.000Z', 588.5),
+      makeHistoryPoint('2026-05-16T09:56:00.000Z', 586),
+    ]
+
+    const signals = detectPatternSignals(history, makeQuote(590))
+    const doubleBottom = signals.find((signal) => signal.kind === 'double_bottom')
+
+    assert.equal(Boolean(doubleBottom), true)
+    assert.equal(doubleBottom?.confirmationStatus, 'confirmed')
+    assert.equal(doubleBottom?.label, '双底确认')
   })
 
   it('detects resistance rejection near repeated swing highs', () => {
@@ -33,7 +54,7 @@ describe('chart pattern detection', () => {
       makeHistoryPoint('2026-05-16T09:53:00.000Z', 589.8),
       makeHistoryPoint('2026-05-16T09:54:00.000Z', 585),
       makeHistoryPoint('2026-05-16T09:55:00.000Z', 589.5),
-      makeHistoryPoint('2026-05-16T09:56:00.000Z', 586.5),
+      makeHistoryPoint('2026-05-16T09:56:00.000Z', 589.2),
     ]
 
     const signals = detectPatternSignals(history, makeQuote(588.8))
@@ -41,6 +62,25 @@ describe('chart pattern detection', () => {
 
     assert.equal(Boolean(rejection), true)
     assert.equal(rejection?.direction, 'bearish')
+    assert.equal(rejection?.confirmationStatus, 'confirmed')
+  })
+
+  it('does not treat flat noise near old lows as a support rebound', () => {
+    const history = [
+      makeHistoryPoint('2026-05-16T09:49:00.000Z', 584),
+      makeHistoryPoint('2026-05-16T09:50:00.000Z', 583.8),
+      makeHistoryPoint('2026-05-16T09:51:00.000Z', 584.1),
+      makeHistoryPoint('2026-05-16T09:52:00.000Z', 583.9),
+      makeHistoryPoint('2026-05-16T09:53:00.000Z', 584.2),
+      makeHistoryPoint('2026-05-16T09:54:00.000Z', 583.9),
+      makeHistoryPoint('2026-05-16T09:55:00.000Z', 584.1),
+      makeHistoryPoint('2026-05-16T09:56:00.000Z', 584),
+    ]
+
+    const signals = detectPatternSignals(history, makeQuote(584.05))
+    const rebound = signals.find((signal) => signal.kind === 'support_rebound')
+
+    assert.equal(Boolean(rebound), false)
   })
 
   it('detects bullish candlestick reversal patterns with invalidation rules', () => {

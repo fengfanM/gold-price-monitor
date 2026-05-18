@@ -10,6 +10,8 @@ import type {
   ExpertConsensus,
   ExpertOpinion,
   ExternalModelAdvisor,
+  FinalDecision,
+  FinalDecisionGate,
   HistoryPoint,
   MarketContext,
   MultiTimeframeConfluence,
@@ -284,7 +286,20 @@ export function evaluateOpportunity(input: {
       ? 68
       : 100
   const finalScore = Math.round(clamp(Math.min(prePlanScore, planScoreCap, psychologyScoreCap), 0, 100))
-  const level = finalScore >= 72 && tradePlan.confidence !== 'low' ? 'strong' : finalScore >= 45 ? 'watch' : 'none'
+  const finalDecision = buildFinalDecision({
+    confluence,
+    eventRisk,
+    externalModelAdvisor,
+    finalScore,
+    latestQuote,
+    marketContext,
+    patternSignals,
+    probabilityModel,
+    psychology,
+    sourceStatus,
+    tradePlan,
+  })
+  const level = finalDecision.strongReminderAllowed ? 'strong' : finalScore >= 45 ? 'watch' : 'none'
   const expertOpinions = buildExpertOpinions({
     externalModelAdvisor,
     finalScore,
@@ -314,6 +329,7 @@ export function evaluateOpportunity(input: {
     valuation,
     patternSignals,
     probabilityModel,
+    finalDecision,
     tradePlan,
     confluence,
     eventRisk,
@@ -964,16 +980,463 @@ function scorePatternSignals(
   let adjustment = 0
   for (const pattern of patternSignals.slice(0, 3)) {
     const weight = Math.round((pattern.confidence - 50) / 10)
+    const confirmed = isConfirmedPattern(pattern)
     if (pattern.direction === 'bullish') {
-      adjustment += Math.max(0, Math.min(8, weight + 3))
-      reasons.push(`${pattern.label}：${pattern.summary} 关键价 ${formatCurrency(pattern.keyPrice)}，失效价 ${formatMaybeCurrency(pattern.invalidationPrice)}。`)
+      if (confirmed) {
+        adjustment += Math.max(0, Math.min(8, weight + 3))
+        reasons.push(`${pattern.label}：${pattern.summary} 关键价 ${formatCurrency(pattern.keyPrice)}，失效价 ${formatMaybeCurrency(pattern.invalidationPrice)}。`)
+      } else {
+        adjustment += Math.max(0, Math.min(2, weight))
+        reasons.push(`${pattern.label}仍是候选：${pattern.summary} 需要先确认 ${formatMaybeCurrency(pattern.necklinePrice)}，失效价 ${formatMaybeCurrency(pattern.invalidationPrice)}。`)
+        risks.push(`${pattern.label}尚未确认，不能单独放大买点评分。`)
+      }
     } else if (pattern.direction === 'bearish') {
-      adjustment -= Math.max(2, Math.min(8, weight + 3))
-      risks.push(`${pattern.label}：${pattern.summary} 阻力/关键价 ${formatCurrency(pattern.keyPrice)}，突破失效 ${formatMaybeCurrency(pattern.invalidationPrice)}。`)
+      adjustment -= confirmed ? Math.max(2, Math.min(8, weight + 3)) : Math.max(1, Math.min(4, weight + 2))
+      risks.push(`${pattern.label}${confirmed ? '' : '候选'}：${pattern.summary} 阻力/关键价 ${formatCurrency(pattern.keyPrice)}，突破失效 ${formatMaybeCurrency(pattern.invalidationPrice)}。`)
     }
   }
 
   return clamp(adjustment, -10, 10)
+}
+
+function isConfirmedPattern(pattern: PatternSignal) {
+  if (pattern.confirmationStatus) {
+    return pattern.confirmationStatus === 'confirmed'
+  }
+  return pattern.expectedConfirmationBars <= 1
+}
+
+function buildFinalDecision(input: {
+  confluence: MultiTimeframeConfluence
+  eventRisk: EconomicEventRisk
+  externalModelAdvisor: ExternalModelAdvisor | null
+  finalScore: number
+  latestQuote: QuoteSample
+  marketContext: MarketContext
+  patternSignals: PatternSignal[]
+  probabilityModel: OpportunitySignal['probabilityModel']
+  psychology: PsychologyDiscipline
+  sourceStatus: SourceStatus
+  tradePlan: TradePlan
+}): FinalDecision {
+  const {
+    confluence,
+    eventRisk,
+    externalModelAdvisor,
+    finalScore,
+    latestQuote,
+    marketContext,
+    patternSignals,
+    probabilityModel,
+    psychology,
+    sourceStatus,
+    tradePlan,
+  } = input
+  const activeChannel = getActiveChannelStatus(sourceStatus)
+  const calibration = latestQuote.marketReference.calibration
+  const prediction = probabilityModel.primaryPrediction
+  const sampleStatus = getDecisionSampleStatus(prediction.sampleSize)
+  const confirmedBullishPattern = patternSignals.find((pattern) => pattern.direction === 'bullish' && isConfirmedPattern(pattern))
+  const criticalProviderFailures = getCriticalProviderFailures(marketContext)
+  const liveFactorCount = countLiveFactors(marketContext)
+  const totalFactorCount = countTotalFactors(marketContext)
+  const liveCoverage = totalFactorCount > 0 ? liveFactorCount / totalFactorCount : null
+  const externalGate = externalModelAdvisor?.backtestGate
+
+  const hardGates: FinalDecisionGate[] = [
+    sourceStatus.stale || activeChannel?.status !== 'healthy'
+      ? {
+          id: 'data-health',
+          label: '实时数据',
+          status: 'block',
+          reason: '主报价源陈旧或不健康，任何买点都只能降级观察。',
+        }
+      : sourceStatus.active === 'fallback'
+        ? {
+            id: 'data-health',
+            label: '实时数据',
+            status: 'watch',
+            reason: '当前使用备用源，需等官方源恢复后再确认。',
+          }
+        : {
+            id: 'data-health',
+            label: '实时数据',
+            status: 'pass',
+            reason: '主报价源健康且未陈旧。',
+          },
+    calibration.withinReferenceRange === false
+      ? {
+          id: 'anchor-consensus',
+          label: '锚点一致',
+          status: 'block',
+          reason: '工银价格与上金所参考锚点偏离超过容忍范围。',
+        }
+      : calibration.premiumPercent === null
+        ? {
+            id: 'anchor-consensus',
+            label: '锚点一致',
+            status: 'watch',
+            reason: '缺少上金所锚点折溢价，不能确认价格是否真的便宜。',
+          }
+        : Math.abs(calibration.premiumPercent) > 0.018
+          ? {
+              id: 'anchor-consensus',
+              label: '锚点一致',
+              status: 'watch',
+              reason: `相对锚点偏离 ${formatPercent(calibration.premiumPercent)}，买点质量需要打折。`,
+            }
+          : {
+              id: 'anchor-consensus',
+              label: '锚点一致',
+              status: 'pass',
+              reason: '工银价格与参考锚点处在可接受区间。',
+            },
+    criticalProviderFailures.length >= 3
+      ? {
+          id: 'provider-coverage',
+          label: '多源覆盖',
+          status: 'block',
+          reason: `关键专业源失败 ${criticalProviderFailures.length} 个，多源校准不足。`,
+        }
+      : liveCoverage !== null && liveCoverage < 0.45
+        ? {
+            id: 'provider-coverage',
+            label: '多源覆盖',
+            status: 'watch',
+            reason: `可用专业因子 ${liveFactorCount}/${totalFactorCount}，覆盖率不足。`,
+          }
+        : {
+            id: 'provider-coverage',
+            label: '多源覆盖',
+            status: 'pass',
+            reason: '多源因子覆盖满足当前观察要求。',
+          },
+    eventRisk.level === 'critical' || eventRisk.level === 'elevated'
+      ? {
+          id: 'event-risk',
+          label: '事件风控',
+          status: 'block',
+          reason: eventRisk.summary,
+        }
+      : eventRisk.level === 'watch'
+        ? {
+            id: 'event-risk',
+            label: '事件风控',
+            status: 'watch',
+            reason: eventRisk.summary,
+          }
+        : {
+            id: 'event-risk',
+            label: '事件风控',
+            status: 'pass',
+            reason: '未进入重大事件冲击窗口。',
+          },
+    tradePlan.riskRewardRatio === null || tradePlan.riskRewardRatio < 2
+      ? {
+          id: 'risk-reward',
+          label: '赔率',
+          status: 'block',
+          reason: '交易计划风险收益比不足 2:1。',
+        }
+      : tradePlan.riskRewardRatio < 2.5
+        ? {
+            id: 'risk-reward',
+            label: '赔率',
+            status: 'watch',
+            reason: `风险收益比 ${tradePlan.riskRewardRatio}:1，未达到强提醒门槛。`,
+          }
+        : {
+            id: 'risk-reward',
+            label: '赔率',
+            status: 'pass',
+            reason: `风险收益比 ${tradePlan.riskRewardRatio}:1，满足强提醒赔率要求。`,
+          },
+    psychology.action === 'stand_down' || psychology.action === 'review_only'
+      ? {
+          id: 'discipline',
+          label: '交易纪律',
+          status: 'block',
+          reason: psychology.summary,
+        }
+      : psychology.action === 'reduce_size'
+        ? {
+            id: 'discipline',
+            label: '交易纪律',
+            status: 'watch',
+            reason: psychology.summary,
+          }
+        : {
+            id: 'discipline',
+            label: '交易纪律',
+            status: 'pass',
+            reason: '心理纪律未触发追高、冲动或复仇交易拦截。',
+          },
+    confluence.conflictLevel === 'severe'
+      ? {
+          id: 'timeframe-confluence',
+          label: '周期共振',
+          status: 'block',
+          reason: confluence.summary,
+        }
+      : confluence.conflictLevel === 'mild'
+        ? {
+            id: 'timeframe-confluence',
+            label: '周期共振',
+            status: 'watch',
+            reason: confluence.summary,
+          }
+        : {
+            id: 'timeframe-confluence',
+            label: '周期共振',
+            status: 'pass',
+            reason: confluence.summary,
+          },
+    confirmedBullishPattern
+      ? {
+          id: 'pattern-confirmation',
+          label: '形态确认',
+          status: 'pass',
+          reason: `${confirmedBullishPattern.label}已确认：${confirmedBullishPattern.confirmationReason ?? confirmedBullishPattern.summary}`,
+        }
+      : patternSignals.some((pattern) => pattern.direction === 'bullish')
+        ? {
+            id: 'pattern-confirmation',
+            label: '形态确认',
+            status: 'watch',
+            reason: '存在看多候选形态，但尚未完成颈线/支撑反弹确认。',
+          }
+        : {
+            id: 'pattern-confirmation',
+            label: '形态确认',
+            status: 'watch',
+            reason: '暂无已确认看多结构，不能把规则分直接放大为强买点。',
+          },
+    sampleStatus === 'robust' || sampleStatus === 'usable'
+      ? {
+          id: 'walk-forward-sample',
+          label: '历史验证',
+          status: 'pass',
+          reason: `概率样本 ${prediction.sampleSize} 个，已可用于低权重校准。`,
+        }
+      : {
+          id: 'walk-forward-sample',
+          label: '历史验证',
+          status: 'watch',
+          reason: `概率样本 ${prediction.sampleSize} 个，尚未达到稳定样本外验证。`,
+        },
+    !externalModelAdvisor || externalModelAdvisor.status === 'unconfigured'
+      ? {
+          id: 'external-advisor',
+          label: '模型军师',
+          status: 'watch',
+          reason: '外部时序基础模型未配置，不能参与强提醒放大。',
+        }
+      : externalModelAdvisor.status === 'error'
+        ? {
+            id: 'external-advisor',
+            label: '模型军师',
+            status: 'watch',
+            reason: `外部模型暂不可用：${externalModelAdvisor.summary}`,
+          }
+        : externalGate?.status === 'weak'
+          ? {
+              id: 'external-advisor',
+              label: '模型军师',
+              status: 'block',
+              reason: externalGate.summary,
+            }
+          : externalGate?.status === 'insufficient' || !externalGate
+            ? {
+                id: 'external-advisor',
+                label: '模型军师',
+                status: 'watch',
+                reason: externalGate?.summary ?? '缺少外部模型分桶回测约束。',
+              }
+            : {
+                id: 'external-advisor',
+                label: '模型军师',
+                status: 'pass',
+                reason: externalGate.summary,
+              },
+  ]
+
+  const blockedReasons = hardGates.filter((gate) => gate.status === 'block').map((gate) => `${gate.label}：${gate.reason}`)
+  const downgradeReasons = hardGates.filter((gate) => gate.status === 'watch').map((gate) => `${gate.label}：${gate.reason}`)
+  const allGatesPassed = hardGates.every((gate) => gate.status === 'pass')
+  const strongReminderAllowed =
+    finalScore >= 72 &&
+    tradePlan.confidence === 'high' &&
+    tradePlan.action === 'confirm_then_enter' &&
+    allGatesPassed
+  const signalGrade: FinalDecision['signalGrade'] = blockedReasons.length > 0
+    ? 'blocked'
+    : strongReminderAllowed
+      ? 'strong_watch'
+      : finalScore >= 68 && downgradeReasons.length <= 2
+        ? 'qualified'
+        : finalScore >= 45
+          ? 'watch'
+          : 'low'
+  const action = mapFinalDecisionAction(signalGrade, tradePlan)
+  const confidenceGrade = getFinalDecisionConfidenceGrade(sampleStatus, prediction, hardGates)
+
+  return {
+    action,
+    actionLabel: finalDecisionActionLabel(action),
+    signalGrade,
+    strongReminderAllowed,
+    userAdvice: buildFinalDecisionAdvice(signalGrade, tradePlan, blockedReasons, downgradeReasons),
+    beginnerAdvice: buildBeginnerDecisionAdvice(signalGrade, tradePlan, blockedReasons, downgradeReasons),
+    blockedReasons,
+    downgradeReasons,
+    hardGates,
+    confidenceGrade,
+    confidenceExplanation: buildConfidenceExplanation(sampleStatus, prediction),
+    accuracyExplanation: buildAccuracyExplanation(sampleStatus, hardGates, prediction),
+    sampleStatus,
+  }
+}
+
+function getDecisionSampleStatus(sampleSize: number): FinalDecision['sampleStatus'] {
+  if (sampleSize >= 120) {
+    return 'robust'
+  }
+  if (sampleSize >= 60) {
+    return 'usable'
+  }
+  if (sampleSize >= 20) {
+    return 'warming_up'
+  }
+  return 'insufficient'
+}
+
+function getFinalDecisionConfidenceGrade(
+  sampleStatus: FinalDecision['sampleStatus'],
+  prediction: ProbabilityPrediction,
+  gates: FinalDecisionGate[],
+): FinalDecision['confidenceGrade'] {
+  if (gates.some((gate) => gate.status === 'block') || sampleStatus === 'insufficient') {
+    return 'unverified'
+  }
+  if (sampleStatus === 'warming_up' || prediction.confidence < 45 || gates.some((gate) => gate.status === 'watch')) {
+    return 'low'
+  }
+  if (sampleStatus === 'usable' || prediction.confidence < 70) {
+    return 'medium'
+  }
+  return 'high'
+}
+
+function mapFinalDecisionAction(
+  signalGrade: FinalDecision['signalGrade'],
+  tradePlan: TradePlan,
+): FinalDecision['action'] {
+  if (tradePlan.action === 'take_profit_or_reduce') {
+    return 'reduce'
+  }
+  if (signalGrade === 'blocked') {
+    return 'avoid'
+  }
+  if (tradePlan.action === 'confirm_then_enter') {
+    return 'confirm_then_enter'
+  }
+  if (tradePlan.action === 'probe') {
+    return 'probe'
+  }
+  if (tradePlan.action === 'observe') {
+    return 'watch'
+  }
+  return signalGrade === 'low' ? 'wait' : 'watch'
+}
+
+function finalDecisionActionLabel(action: FinalDecision['action']) {
+  const labels: Record<FinalDecision['action'], string> = {
+    avoid: '回避，不开新仓',
+    wait: '等待，不追单',
+    watch: '观察，等确认',
+    probe: '轻仓试探',
+    confirm_then_enter: '确认后分批参与',
+    reduce: '止盈或降仓',
+  }
+  return labels[action]
+}
+
+function buildFinalDecisionAdvice(
+  signalGrade: FinalDecision['signalGrade'],
+  tradePlan: TradePlan,
+  blockedReasons: string[],
+  downgradeReasons: string[],
+) {
+  if (blockedReasons.length > 0) {
+    return `核心决策：暂不买。先解决 ${blockedReasons[0]}`
+  }
+  if (signalGrade === 'strong_watch') {
+    return `核心决策：强观察。只有站稳触发价 ${formatMaybeCurrency(tradePlan.triggerPrice)} 且止损 ${formatMaybeCurrency(tradePlan.stopLoss)} 有效时，才考虑按计划分批。`
+  }
+  if (signalGrade === 'qualified') {
+    return `核心决策：候选买点。先等触发价 ${formatMaybeCurrency(tradePlan.triggerPrice)}，未确认前不要把观察信号当成买入指令。`
+  }
+  if (signalGrade === 'watch') {
+    return `核心决策：继续观察。还差 ${downgradeReasons[0] ?? '更多样本和形态确认'}。`
+  }
+  return '核心决策：等待。当前胜率证据不足，先保留现金和耐心。'
+}
+
+function buildBeginnerDecisionAdvice(
+  signalGrade: FinalDecision['signalGrade'],
+  tradePlan: TradePlan,
+  blockedReasons: string[],
+  downgradeReasons: string[],
+) {
+  if (blockedReasons.length > 0) {
+    return '小白版：现在先别动，不要因为价格跌了就急着买；系统还有硬性风险没通过。'
+  }
+  if (signalGrade === 'strong_watch') {
+    return `小白版：这是少数允许重点盯盘的场景，但也不是无脑买；先看价格能否确认突破 ${formatMaybeCurrency(tradePlan.triggerPrice)}。`
+  }
+  if (signalGrade === 'qualified') {
+    return '小白版：像是一个可以蹲守的机会，但还没到“闭眼冲”的程度，等确认比抢跑更重要。'
+  }
+  if (signalGrade === 'watch') {
+    return `小白版：先看戏，别追。系统提示还差：${downgradeReasons[0] ?? '确认信号'}`
+  }
+  return '小白版：当前不值得出手，宁可错过，也别在证据不足时亏钱。'
+}
+
+function buildConfidenceExplanation(
+  sampleStatus: FinalDecision['sampleStatus'],
+  prediction: ProbabilityPrediction,
+) {
+  const sampleText = sampleStatus === 'robust'
+    ? '样本较充分'
+    : sampleStatus === 'usable'
+      ? '样本可用但仍需继续积累'
+      : sampleStatus === 'warming_up'
+        ? '样本正在预热'
+        : '样本严重不足'
+  const brierText = prediction.brierScore === null
+    ? '暂缺 Brier 校准误差'
+    : `Brier ${prediction.brierScore.toFixed(3)}`
+  return `${sampleText}，当前预测置信度 ${prediction.confidence}/100，${brierText}。`
+}
+
+function buildAccuracyExplanation(
+  sampleStatus: FinalDecision['sampleStatus'],
+  gates: FinalDecisionGate[],
+  prediction: ProbabilityPrediction,
+) {
+  const blocked = gates.filter((gate) => gate.status === 'block').length
+  const watch = gates.filter((gate) => gate.status === 'watch').length
+  if (blocked > 0) {
+    return `准确率优先模式：${blocked} 道硬闸门未通过，系统宁愿错过也不放大信号。`
+  }
+  if (watch > 0) {
+    return `准确率优先模式：${watch} 道条件仍需确认，当前只给观察，不给强提醒。`
+  }
+  if (sampleStatus === 'robust' || sampleStatus === 'usable') {
+    return `准确率优先模式：硬闸门通过，且概率模型已有 ${prediction.sampleSize} 个样本参与校准。`
+  }
+  return '准确率优先模式：规则信号存在，但样本外验证不足，暂不允许强提醒。'
 }
 
 function buildTradePlan(input: {
@@ -1001,7 +1464,9 @@ function buildTradePlan(input: {
     valuation,
   } = input
   const price = latestQuote.price
-  const bullishPattern = patternSignals.find((pattern) => pattern.direction === 'bullish')
+  const bullishPattern =
+    patternSignals.find((pattern) => pattern.direction === 'bullish' && isConfirmedPattern(pattern)) ??
+    patternSignals.find((pattern) => pattern.direction === 'bullish' && pattern.kind !== 'double_bottom')
   const bearishPattern = patternSignals.find((pattern) => pattern.direction === 'bearish')
   const volatilityStop = valuation.volatility !== null
     ? Math.max(price * 0.0035, price * valuation.volatility * 3)

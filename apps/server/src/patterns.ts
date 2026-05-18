@@ -173,6 +173,10 @@ function buildCandleSignal(input: {
     label: input.label,
     direction: input.direction,
     confidence: Math.round(input.confidence),
+    confirmationStatus: input.kind === 'doji' ? 'candidate' : 'confirmed',
+    confirmationReason: input.kind === 'doji'
+      ? '十字星只代表多空犹豫，需要下一根 K 线确认方向。'
+      : '微型 K 线形态已在最新窗口内完成，但仍需价格不破失效价。',
     detectedAt: input.candle.timestamp,
     keyPrice: input.candle.close,
     necklinePrice: null,
@@ -244,18 +248,23 @@ function detectDoubleBottom(points: PricePoint[], swings: SwingPoint[]): Pattern
       const neckline = Math.max(...middle.map((point) => point.price))
       const rebound = (latest.price - right.price) / right.price
       const necklineDistance = (neckline - latest.price) / latest.price
+      const confirmed = latest.price >= neckline
       const confidence = clamp(
-        45 + (0.006 - similarity) * 5000 + Math.min(rebound * 2800, 18) - Math.max(necklineDistance, 0) * 700,
+        45 + (0.006 - similarity) * 5000 + Math.min(rebound * 2800, 18) - Math.max(necklineDistance, 0) * 700 + (confirmed ? 8 : -8),
         38,
-        82,
+        confirmed ? 82 : 64,
       )
 
       return {
         id: `pattern-double-bottom-${right.timestamp}`,
         kind: 'double_bottom',
-        label: '疑似双底',
+        label: confirmed ? '双底确认' : '疑似双底',
         direction: 'bullish',
         confidence: Math.round(confidence),
+        confirmationStatus: confirmed ? 'confirmed' : 'candidate',
+        confirmationReason: confirmed
+          ? '最新价格已站上双底颈线，形态进入确认观察。'
+          : '右底反弹尚未站上颈线，只能作为候选形态等待确认。',
         detectedAt: latest.timestamp,
         keyPrice: right.price,
         necklinePrice: neckline,
@@ -290,18 +299,23 @@ function detectDoubleTop(points: PricePoint[], swings: SwingPoint[]): PatternSig
       const neckline = Math.min(...middle.map((point) => point.price))
       const rejection = (right.price - latest.price) / right.price
       const necklineDistance = (latest.price - neckline) / latest.price
+      const confirmed = latest.price <= neckline
       const confidence = clamp(
-        44 + (0.006 - similarity) * 4800 + Math.min(rejection * 2600, 20) - Math.max(necklineDistance, 0) * 450,
+        44 + (0.006 - similarity) * 4800 + Math.min(rejection * 2600, 20) - Math.max(necklineDistance, 0) * 450 + (confirmed ? 8 : -6),
         36,
-        80,
+        confirmed ? 80 : 64,
       )
 
       return {
         id: `pattern-double-top-${right.timestamp}`,
         kind: 'double_top',
-        label: '疑似双顶',
+        label: confirmed ? '双顶确认' : '疑似双顶',
         direction: 'bearish',
         confidence: Math.round(confidence),
+        confirmationStatus: confirmed ? 'confirmed' : 'candidate',
+        confirmationReason: confirmed
+          ? '最新价格已跌破双顶颈线，风险形态进入确认。'
+          : '两次冲高受阻但尚未跌破颈线，只能作为候选风险观察。',
         detectedAt: latest.timestamp,
         keyPrice: right.price,
         necklinePrice: neckline,
@@ -321,13 +335,22 @@ function detectDoubleTop(points: PricePoint[], swings: SwingPoint[]): PatternSig
 
 function detectSupportRebound(points: PricePoint[], swings: SwingPoint[]): PatternSignal | null {
   const latest = points[points.length - 1]
+  const previous = points[points.length - 2]
   const recentLows = swings.filter((swing) => swing.type === 'low').slice(-5)
-  if (recentLows.length < 2) {
+  if (!previous || recentLows.length < 2) {
     return null
   }
   const support = average(recentLows.map((swing) => swing.price))
   const distance = (latest.price - support) / latest.price
   if (distance < 0 || distance > 0.006) {
+    return null
+  }
+  const recentWindow = points.slice(Math.max(0, points.length - 16), -1)
+  const priorHigh = Math.max(...recentWindow.map((point) => point.price))
+  const dropIntoSupport = priorHigh > 0 ? (priorHigh - support) / priorHigh : 0
+  const reboundFromSupport = (latest.price - support) / support
+  const latestMove = (latest.price - previous.price) / previous.price
+  if (dropIntoSupport < 0.004 || reboundFromSupport < 0.001 || latestMove < 0) {
     return null
   }
 
@@ -336,7 +359,9 @@ function detectSupportRebound(points: PricePoint[], swings: SwingPoint[]): Patte
     kind: 'support_rebound',
     label: '支撑反弹',
     direction: 'bullish',
-    confidence: Math.round(clamp(58 - distance * 2600 + recentLows.length * 3, 42, 72)),
+    confidence: Math.round(clamp(54 - distance * 2200 + recentLows.length * 3 + Math.min(dropIntoSupport * 900, 8), 44, 74)),
+    confirmationStatus: 'confirmed',
+    confirmationReason: '价格先回落到多次低点支撑附近，随后出现正向反弹且未破支撑。',
     detectedAt: latest.timestamp,
     keyPrice: support,
     necklinePrice: null,
@@ -350,13 +375,22 @@ function detectSupportRebound(points: PricePoint[], swings: SwingPoint[]): Patte
 
 function detectResistanceRejection(points: PricePoint[], swings: SwingPoint[]): PatternSignal | null {
   const latest = points[points.length - 1]
+  const previous = points[points.length - 2]
   const recentHighs = swings.filter((swing) => swing.type === 'high').slice(-5)
-  if (recentHighs.length < 2) {
+  if (!previous || recentHighs.length < 2) {
     return null
   }
   const resistance = average(recentHighs.map((swing) => swing.price))
   const distance = (resistance - latest.price) / latest.price
   if (distance < 0 || distance > 0.008) {
+    return null
+  }
+  const recentWindow = points.slice(Math.max(0, points.length - 16), -1)
+  const priorLow = Math.min(...recentWindow.map((point) => point.price))
+  const riseIntoResistance = priorLow > 0 ? (resistance - priorLow) / priorLow : 0
+  const rejectionFromResistance = (resistance - latest.price) / resistance
+  const latestMove = (latest.price - previous.price) / previous.price
+  if (riseIntoResistance < 0.004 || rejectionFromResistance < 0.001 || latestMove > 0) {
     return null
   }
 
@@ -365,7 +399,9 @@ function detectResistanceRejection(points: PricePoint[], swings: SwingPoint[]): 
     kind: 'resistance_rejection',
     label: '阻力压制',
     direction: 'bearish',
-    confidence: Math.round(clamp(54 - distance * 1800 + recentHighs.length * 3, 40, 70)),
+    confidence: Math.round(clamp(52 - distance * 1600 + recentHighs.length * 3 + Math.min(riseIntoResistance * 800, 8), 42, 72)),
+    confirmationStatus: 'confirmed',
+    confirmationReason: '价格先上冲到多次高点阻力附近，随后回落且未突破阻力。',
     detectedAt: latest.timestamp,
     keyPrice: resistance,
     necklinePrice: null,
