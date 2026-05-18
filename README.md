@@ -1,247 +1,86 @@
 # Gold Price Monitor
 
-Gold Price Monitor 是一个面向工银积存金和人民币黄金口径的可解释行情与买点研究终端。它把多源报价校准、金融图表、本地概率模型、可选外部时序军师、分桶回测、事件风控和交易计划放进同一条可审计证据链里，目标是帮助用户更清楚地观察黄金买卖点，而不是输出黑盒喊单。
+Gold Price Monitor 是一个面向 **工银积存金 / 人民币黄金口径** 的可解释行情、预测军师、买点观察和风险决策终端。它不是一个“AI 喊单器”，而是把实时行情、多源校准、本地概率模型、可选外部时序模型、分桶回测、事件风控和交易计划压到同一条可审计证据链里。
 
-> **Important:** 本项目仅用于行情观察、模型研究、风险提示和纸面验证，不构成投资建议、收益承诺、买入指令、卖出指令或自动交易依据。所有预测、评分、买点观察、仓位提示和专家团摘要都可能失效。
+> **Risk boundary:** 本项目仅用于行情观察、模型研究、纸面验证和风险提示，不构成投资建议、收益承诺、买入指令、卖出指令或自动交易依据。所有预测、评分、买点观察、仓位提示和专家团摘要都可能失效。
 
-## Abstract
+## Graphical Abstract
 
-黄金短线交易最难的地方不是“看到一个价格”，而是判断这个价格在当前数据源健康度、人民币计价口径、国际金趋势、汇率、宏观事件、技术结构和历史同类场景中到底意味着什么。Gold Price Monitor 的设计原则是：
+<img src="./docs/assets/figures/gold-monitor-graphical-abstract.png" alt="Gold Price Monitor graphical abstract" width="100%" />
 
-- **Price first, but never single-source.** 工银积存金是主报价，但必须和上金所、AU9999、国内参考价、国际金、汇率和宏观源共同校准。
-- **Signals are evidence, not commands.** 本地规则模型和外部时序模型只生成证据，最终由风控、回测和交易计划门控。
-- **Prediction must be calibrated.** 概率必须接受 baseline、Brier Score、Profit Factor、最大回撤和 live bucket 的检验。
-- **Risk vetoes model confidence.** 数据异常、重大事件窗口、弱桶、样本不足、止损不清晰时，任何看多模型都不能直接放大买点。
-- **Beginner-readable, expert-auditable.** 页面给小白用户翻译成“现在做什么、为什么、错了怎么办”，同时保留专业指标和复盘依据。
+**Fig. 1 | System-level graphical abstract.** 系统从多源黄金数据进入校准核心，再经过专业图表、本地模型、外部时序军师、live gate 和风险优先交易计划，最终给用户展示“观察 / 等待 / 强观察 / 暂避”等可解释结论。
 
-## Figure Map
+## Why This Project Exists
 
-本文档用 6 张 Mermaid 图描述系统核心。它们是 README 的“论文式多面板图”，不依赖外部图片资产，GitHub 可直接渲染。
+黄金短线交易里，“价格是多少”只是最浅的一层。真正困难的是：
 
-| Figure | 主题 | 回答的问题 |
+- 这个工银积存金报价是否新鲜、是否和上金所 / AU9999 / 国内参考价一致？
+- 国际金、美元指数、人民币汇率、实际利率和事件窗口是否支持这个方向？
+- K线、分时、支撑压力、RSI、MACD 和多周期是否共振？
+- 当前看起来像买点，历史同类场景真的有优势吗？
+- 模型看多时，是可验证概率，还是只是漂亮但未校准的预测？
+- 如果判断错了，止损、失效价和仓位边界在哪里？
+
+Gold Price Monitor 的目标就是把这些问题变成一套清晰、可复盘、可降级的决策系统。
+
+## Current Capability Matrix
+
+| Area | 当前已经实现 | 不能夸大的边界 |
 | --- | --- | --- |
-| Fig.1 | Explainable Decision Terminal | 从行情到决策页的全链路是什么？ |
-| Fig.2 | Multi-Source Calibration | 为什么不能只相信一个价格接口？ |
-| Fig.3 | External Advisors and Gate | Chronos/TimesFM/Moirai 这类军师如何被约束？ |
-| Fig.4 | Buy/Sell Point Logic | 买点从市场状态到交易计划如何生成？ |
-| Fig.5 | Backtest and Live Gate | 模型如何避免回测自嗨？ |
-| Fig.6 | Beginner Path | 小白用户如何读懂大师建议和风险边界？ |
+| 主行情 | 工银积存金主报价，官方异步接口优先，公开页面 fallback | 周末和非交易时段不更新正常；工作日必须看 freshness |
+| 多源校准 | 上金所 / AU9999、金投网、浙商积存金、国际金、汇率和宏观源框架 | 不同源有延迟和口径差异，不能粗暴平均 |
+| 本地概率模型 | `rules-calibrated-logit-v1`，输出 `5m / 15m / 60m / 240m` 上涨概率 | 这是规则校准 logit，不是深度学习训练模型 |
+| 买点评分 | 技术、形态、估值、宏观、事件、心理纪律、交易计划和回测共同影响分数与上限 | 分数不是买入指令 |
+| 外部军师 | `EXTERNAL_TS_MODEL_URL` / `EXTERNAL_TS_MODEL_ENDPOINTS` HTTP 接口，支持多 provider schema | 接口支持不等于所有 provider 已生产稳定运行 |
+| Chronos-Bolt | 可选本地 Chronos-Bolt 推理服务，已做过真实模型联调 | 当前不能宣传为已验证高准确率交易模型 |
+| 回测 gate | 策略桶和外部模型桶，统计胜率、超额胜率、PF、Brier、MAE、回撤 | historical 不能直接污染 live gate |
+| 前端终端 | 分时、K线、MA、BOLL、RSI、MACD、预测区间、五个决策 Tab | UI 是解释层，不消除投资风险 |
 
-## Fig.1 Gold Price Monitor: Explainable Decision Terminal
+## Data Calibration
 
-```mermaid
-flowchart LR
-  subgraph D["Data Layer"]
-    ICBC["ICBC 积存金<br/>主报价"]
-    SGE["SGE / AU9999<br/>人民币黄金锚"]
-    INTL["GC=F / XAUUSD<br/>国际金趋势"]
-    FX["USD/CNY / DXY / FRED<br/>汇率与宏观"]
-    FLOW["COT / ETF / CME<br/>资金与持仓"]
-    NEWS["RSS / Events<br/>新闻与事件"]
-  end
+<img src="./docs/assets/figures/data-calibration-health.png" alt="Multi-source data calibration and provider health" width="100%" />
 
-  subgraph P["Provider & Quality Layer"]
-    ADAPTER["Provider Adapters"]
-    QUOTE["QuoteService"]
-    FRESH["Freshness"]
-    CONSENSUS["Consensus Check"]
-    ANOMALY["Anomaly Guard"]
-    HEALTH["Provider Health"]
-  end
+**Fig. 2 | Multi-source calibration and provider health.** 系统不会只相信单一报价源。工银积存金是主交易口径，但强信号必须经过 freshness、anomaly、consensus、provider health 等检查；一旦关键源 stale、异常跳价或共识偏离不可解释，买点会被降级或拦截。
 
-  subgraph M["Decision & Model Layer"]
-    LOCAL["Local Strategy Engine"]
-    PROB["rules-calibrated-logit-v1<br/>5m / 15m / 60m / 240m"]
-    EXT["External TS Advisor<br/>HTTP schema"]
-    PLAN["Trade Plan Builder"]
-  end
+### Data Source Hierarchy
 
-  subgraph V["Validation Layer"]
-    SNAP["Backtest Snapshots"]
-    BUCKET["Bucket Monitor"]
-    GATE["Live Gate"]
-  end
-
-  subgraph U["React Terminal"]
-    API["API Snapshot"]
-    CHART["分时 / K线 / MA / BOLL / RSI / MACD"]
-    TABS["决策 / 计划 / 风控 / 依据 / 验证"]
-  end
-
-  ICBC --> ADAPTER
-  SGE --> ADAPTER
-  INTL --> ADAPTER
-  FX --> ADAPTER
-  FLOW --> ADAPTER
-  NEWS --> ADAPTER
-  ADAPTER --> QUOTE
-  QUOTE --> FRESH
-  QUOTE --> CONSENSUS
-  QUOTE --> ANOMALY
-  QUOTE --> HEALTH
-  FRESH --> LOCAL
-  CONSENSUS --> LOCAL
-  ANOMALY --> LOCAL
-  HEALTH --> LOCAL
-  LOCAL --> PROB
-  LOCAL --> EXT
-  PROB --> PLAN
-  EXT --> BUCKET
-  BUCKET --> GATE
-  GATE --> LOCAL
-  PLAN --> SNAP
-  SNAP --> BUCKET
-  LOCAL --> API
-  API --> CHART
-  API --> TABS
-
-  classDef data fill:#e0f2fe,stroke:#0284c7,color:#0f172a
-  classDef quality fill:#eef2ff,stroke:#4f46e5,color:#0f172a
-  classDef model fill:#fff7ed,stroke:#ea580c,color:#0f172a
-  classDef verify fill:#ecfdf5,stroke:#059669,color:#0f172a
-  classDef ui fill:#f8fafc,stroke:#64748b,color:#0f172a
-  class ICBC,SGE,INTL,FX,FLOW,NEWS data
-  class ADAPTER,QUOTE,FRESH,CONSENSUS,ANOMALY,HEALTH quality
-  class LOCAL,PROB,EXT,PLAN model
-  class SNAP,BUCKET,GATE verify
-  class API,CHART,TABS ui
-```
-
-## What Is Implemented Today
-
-| Layer | Current capability | Boundary |
+| Tier | Examples | Role in decision |
 | --- | --- | --- |
-| Real-time quote | 工银积存金主报价，官方异步接口优先，公开页面 fallback | 周末或非交易时段不更新是正常现象，工作日需要看 freshness 和 provider health |
-| Multi-source calibration | 上金所、AU9999、金投网国内黄金、浙商积存金、国际金、汇率、宏观和资金源框架 | 不同来源存在延迟、口径和交易时段差异，不能简单取平均 |
-| Local probability model | `rules-calibrated-logit-v1`，输出 `5/15/60/240` 分钟上涨概率，主窗口为 60 分钟 | 这是规则/特征 logit 模型，不是经过大规模训练的深度学习模型 |
-| Strategy engine | 多因素评分、score cap、事件风险、心理纪律、交易计划、strong/watch/avoid 分级 | 强信号仍是“观察信号”，不是交易指令 |
-| External advisor | `EXTERNAL_TS_MODEL_URL` / `EXTERNAL_TS_MODEL_ENDPOINTS` HTTP 接入口，标准化外部模型输出 | 代码提供接入框架，不代表所有 provider 都已生产部署 |
-| Chronos-Bolt service | `services/chronos-bolt` 可本地运行 Chronos-Bolt 推理服务 | Chronos 是可选实验军师，当前不能宣传为已验证高准确率交易模型 |
-| Backtest buckets | 普通策略桶和外部模型桶，统计胜率、超额胜率、Profit Factor、Brier、MAE、回撤等 | historical 和 live 必须隔离，historical 不能直接放大生产信号 |
-| Frontend terminal | 分时、K线、MA、BOLL、RSI、MACD、支撑压力、预测区间、五个决策 Tab | UI 展示辅助理解，不消除模型和数据源风险 |
+| Primary trading口径 | ICBC accumulation gold | 页面主价格和交易口径 |
+| RMB gold anchors | SGE / AU9999 / domestic references | 校准人民币黄金相对位置 |
+| Global gold drivers | GC=F / XAUUSD | 判断国际黄金主趋势 |
+| FX and macro | USD/CNY, DXY, real yield, inflation, VIX | 判断人民币计价黄金是否有宏观顺风/逆风 |
+| Positioning and flow | COT, GLD, WGC ETF, CME OI/volume | 判断资金拥挤、流入流出和趋势参与度 |
+| Text/event sources | RSS, blogger feeds, CPI/FOMC/NFP windows | 只做低权重解释和事件风险，不直接喊单 |
 
-## Fig.2 Multi-Source Calibration and Provider Health
+## Model Stack
 
-```mermaid
-flowchart TB
-  subgraph C["Critical Sources"]
-    GC["GC=F / XAUUSD"]
-    DXY["DXY"]
-    CNY["USD/CNY"]
-    REAL["DFII10<br/>Real Yield"]
-  end
+系统分为 5 层，越往下越接近风控，越不能被模型置信度覆盖。
 
-  subgraph Core["Core Sources"]
-    ICBC2["ICBC 积存金"]
-    SGE2["SGE / AU9999"]
-    COT["COT Gold Net"]
-    GLD["GLD Holdings"]
-    WGC["WGC ETF"]
-    CME["CME Open Interest"]
-  end
+| Layer | Name | What it does |
+| --- | --- | --- |
+| 1 | Data Quality Guard | 判断报价是否新鲜、是否异常、是否和参考源偏离过大 |
+| 2 | Local Strategy Engine | 组合技术、形态、估值、宏观、事件和心理纪律 |
+| 3 | Local Probability Model | 用规则校准 logit 输出多周期上涨概率 |
+| 4 | External TS Advisor | 接入 Chronos / TimesFM / Moirai / custom HTTP provider 的预测证据 |
+| 5 | Bucket Gate & Trade Plan | 用同类样本、Brier、PF、回撤和止损计划决定是否允许加权 |
 
-  subgraph S["Supporting Sources"]
-    VIX["VIX"]
-    CN["金投网 / 国内黄金"]
-    ZS["浙商积存金"]
-    CB["Central Bank Gold"]
-    VOL["CME Volume"]
-  end
+### Local Probability Model
 
-  subgraph E["Experimental Sources"]
-    RSS["News RSS"]
-    BLOG["Blogger RSS"]
-  end
+当前本地概率模型是 `rules-calibrated-logit-v1`，不是黑盒神经网络。它从当前行情提取特征，并输出不同窗口的上涨概率。
 
-  subgraph H["Health Scoring"]
-    LAT["latencyQuality"]
-    FAIL["failureStreak"]
-    COOL["cooldownUntil"]
-    QS["qualityScore"]
-    RR["reliabilityRisk"]
-  end
-
-  subgraph O["Calibration Output"]
-    MAIN["主报价可信度"]
-    DEV["国内参考价偏离"]
-    CONS["共识价偏离"]
-    ACTION["强信号允许 / 降级 / 禁止"]
-  end
-
-  GC --> LAT
-  DXY --> LAT
-  CNY --> QS
-  REAL --> RR
-  ICBC2 --> QS
-  SGE2 --> DEV
-  COT --> RR
-  GLD --> RR
-  WGC --> RR
-  CME --> RR
-  VIX --> QS
-  CN --> DEV
-  ZS --> DEV
-  CB --> QS
-  VOL --> QS
-  RSS --> FAIL
-  BLOG --> FAIL
-  LAT --> MAIN
-  FAIL --> MAIN
-  COOL --> MAIN
-  QS --> DEV
-  RR --> CONS
-  MAIN --> ACTION
-  DEV --> ACTION
-  CONS --> ACTION
-
-  classDef critical fill:#fee2e2,stroke:#dc2626,color:#111827
-  classDef core fill:#dbeafe,stroke:#2563eb,color:#111827
-  classDef support fill:#fef3c7,stroke:#d97706,color:#111827
-  classDef exp fill:#f3e8ff,stroke:#7c3aed,color:#111827
-  classDef health fill:#ecfdf5,stroke:#059669,color:#111827
-  class GC,DXY,CNY,REAL critical
-  class ICBC2,SGE2,COT,GLD,WGC,CME core
-  class VIX,CN,ZS,CB,VOL support
-  class RSS,BLOG exp
-  class LAT,FAIL,COOL,QS,RR,MAIN,DEV,CONS,ACTION health
-```
-
-系统的核心态度是：工银价格是交易口径核心，但“准确实时”必须通过多源健康度确认。工作日交易时段内，如果主报价 stale、国内锚点偏离不可解释、critical provider 连续失败或异常跳价，强买点会被降级或禁止。
-
-## Prediction and Advisor Models
-
-项目不是单一“AI 预测器”，而是一个多层证据系统。
-
-### 1. Local Strategy Engine
-
-本地策略引擎负责把可解释因素转成买点等级、交易计划和风险提示。它会综合：
-
-- 数据质量：官方源、fallback、staleness、异常值、国内多源共识偏离。
-- 价格位置：24h 区间分位、回撤、日内高低点、短线反弹。
-- 技术指标：MA、BOLL、RSI、MACD、趋势斜率、波动状态。
-- K线形态：双底、双顶、支撑反弹、压力回落、锤子线、吞没、十字星。
-- 多周期共振：短周期和更高周期是否冲突。
-- 宏观环境：美元指数、人民币汇率、实际利率、通胀预期、VIX、ETF、COT、央行购金、CME 活跃度。
-- 事件风险：CPI、FOMC、非农等窗口前后自动降权。
-- 心理纪律：追高、急跌冲动、连续失败、仓位过大、止损距离不合理。
-- 交易计划：入场区、触发价、失效价、止损、TP1/TP2、最大仓位和风险收益比。
-
-### 2. Local Probability Model
-
-本地概率模型是 `rules-calibrated-logit-v1`。它不是黑盒深度学习模型，而是把当前行情状态编码为特征后，用规则校准的 logit 形式输出多 horizon 上涨概率：
-
-| Horizon | 用途 |
+| Feature family | Examples |
 | --- | --- |
-| `5m` | 判断瞬时反弹或急跌后的噪声风险 |
-| `15m` | 判断短线确认和盘口延续 |
-| `60m` | 当前主预测窗口，用于图表和买点观察摘要 |
-| `240m` | 判断更高周期是否和短线冲突 |
+| Price location | 24h 区间位置、回撤、日内高低点、短线反弹 |
+| Technicals | MA20、RSI、MACD、波动、均线斜率 |
+| Structure | 支撑压力、双底/双顶、锤子线、吞没、十字星 |
+| Cross-market | AU9999 锚点、国内参考价、国际金、人民币汇率 |
+| Macro | 美元指数、实际利率、通胀预期、VIX、ETF、COT、央行购金 |
+| Risk | 数据质量、事件窗口、多周期冲突、心理纪律 |
 
-典型特征包括 24h 位置、回撤、短线反弹、波动、RSI/MACD/MA20、锚点折溢价、宏观/情绪、形态、多周期和数据源健康。模型输出会进入专家团和图表预测，但不会绕过风控。
+### External Advisor Model
 
-### 3. External Time-Series Advisor
-
-外部军师是一个标准 HTTP 接入口，而不是把某个模型硬编码为真理。主服务通过下面两种配置调用外部模型：
+外部军师是标准 HTTP 接口，不是不可质疑的交易权威。
 
 ```bash
 EXTERNAL_TS_MODEL_URL=http://127.0.0.1:8000/forecast
@@ -252,397 +91,97 @@ EXTERNAL_TS_MODEL_HORIZON_MINUTES=60
 EXTERNAL_TS_MODEL_CONTEXT_POINTS=256
 ```
 
-标准输出字段：
+统一输出：
 
-| Field | Meaning |
+| Output | Meaning |
 | --- | --- |
 | `upProbability` / `downProbability` | 未来窗口方向概率 |
-| `confidence` | 模型自身置信度 |
+| `confidence` | 模型置信度 |
 | `forecastPrice` | 预测中心价 |
-| `intervalLow` / `intervalHigh` | 预测区间 |
-| `rationale` | 模型解释摘要 |
-| `risks` | 模型认为的主要风险 |
+| `intervalLow` / `intervalHigh` | 概率区间 |
+| `rationale` / `risks` | 模型解释与风险 |
 | `competitors` | 多 provider 对照结果 |
 
-当前代码支持 Chronos、TimesFM、Moirai、Lag-Llama、custom provider 的统一 schema 和分桶对比，但这不等于这些模型都已经稳定生产上线。Chronos-Bolt 是当前本地可运行的示例外部军师；TimesFM、Moirai、Chronos-2、TimeGPT、PatchTST、TFT、FinGPT、FinRL 属于研究或后续扩展路线，详见 [Gold Model Upgrade Research](./docs/GOLD_MODEL_UPGRADE_RESEARCH.md)。
+## External Advisor Gate
 
-## Fig.3 External Advisors as Calibrated Evidence, Not Trading Authority
+<img src="./docs/assets/figures/external-advisor-gate.png" alt="External advisor gate architecture" width="100%" />
 
-```mermaid
-flowchart LR
-  subgraph I["Model Inputs"]
-    PRICE["Recent Price Context"]
-    FEAT["Local Features"]
-    DEV2["Consensus Deviation"]
-    REG["Macro Regime"]
-    HOR["Horizon"]
-  end
+**Fig. 3 | External advisors are calibrated evidence, not trading authority.** Chronos-Bolt、TimesFM、Moirai、PatchTST/TFT 等都必须进入统一输出 schema，再按 provider、horizon、概率桶、置信度桶、session、pattern、event risk、source health 做分桶检验。模型只有在 live 同类场景证明自己不弱，且与本地规则共振时，才允许低权重加分。
 
-  subgraph A["Advisor Candidates"]
-    CH["Chronos-Bolt<br/>optional local service"]
-    CH2["Chronos-2<br/>research route"]
-    TF["TimesFM<br/>research route"]
-    MO["Moirai<br/>research route"]
-    PT["PatchTST / TFT<br/>local baseline route"]
-  end
+### Gate Policy
 
-  subgraph S2["Standardized Output"]
-    UP["upProbability"]
-    CONF["confidence"]
-    FP["forecastPrice"]
-    INT["intervalLow / intervalHigh"]
-    WHY["rationale / risks"]
-  end
+| Gate state | Condition | Strategy effect |
+| --- | --- | --- |
+| Show only | 样本不足，或 provider 刚接入 | 展示、记录，不加权 |
+| Blocked | 弱桶、负超额胜率、PF 不达标、Brier 偏差过高 | 权重为 0 |
+| Low Weight | 表现中性，但没有明显反证 | 只作为低权重参考 |
+| Small Bonus | 样本充足、同类桶表现稳定、本地规则同向 | 允许小幅加分，但不能覆盖风控 |
 
-  subgraph B["Bucket Monitor"]
-    PB["probability bucket"]
-    CB["confidence bucket"]
-    HB["horizon"]
-    PRB["provider"]
-    SB["session / pattern / event / source health"]
-  end
+当前最重要的证据状态：
 
-  subgraph G["Gate"]
-    INSUFF["样本不足<br/>show only"]
-    WEAK["弱桶<br/>weight = 0"]
-    NEUTRAL["中性桶<br/>low reference"]
-    STRONG["强桶 + 本地共振<br/>small bonus"]
-  end
-
-  EVID["Advisor Evidence Score"]
-  STRAT["Strategy Engine"]
-  NOORDER["No direct buy order"]
-
-  PRICE --> CH
-  FEAT --> CH
-  DEV2 --> TF
-  REG --> MO
-  HOR --> PT
-  CH --> UP
-  CH2 --> CONF
-  TF --> FP
-  MO --> INT
-  PT --> WHY
-  UP --> PB
-  CONF --> CB
-  FP --> HB
-  INT --> PRB
-  WHY --> SB
-  PB --> INSUFF
-  CB --> WEAK
-  HB --> NEUTRAL
-  PRB --> STRONG
-  SB --> STRONG
-  INSUFF --> EVID
-  WEAK --> EVID
-  NEUTRAL --> EVID
-  STRONG --> EVID
-  EVID --> STRAT
-  STRAT -. risk boundary .-> NOORDER
-
-  classDef input fill:#e0f2fe,stroke:#0284c7,color:#0f172a
-  classDef advisor fill:#fff7ed,stroke:#ea580c,color:#0f172a
-  classDef bucket fill:#ecfdf5,stroke:#059669,color:#0f172a
-  classDef gate fill:#fee2e2,stroke:#dc2626,color:#0f172a
-  class PRICE,FEAT,DEV2,REG,HOR input
-  class CH,CH2,TF,MO,PT,UP,CONF,FP,INT,WHY advisor
-  class PB,CB,HB,PRB,SB,EVID bucket
-  class INSUFF,WEAK,NEUTRAL,STRONG,NOORDER gate
-```
-
-### Current Evidence State
-
-当前最重要的专业结论是克制：
-
-- Chronos-Bolt 已作为可选本地 HTTP 服务跑通，并验证过 `chronosLoaded=true`、`fallbackEnabled=false` 的真实模型模式。
-- 一次 historical 验证使用 NBP 官方黄金 `PLN/g` fallback 数据，方向胜率为 `48.33%`，低于 `55.00%` 基准胜率。
-- 同次验证 Profit Factor 为 `1.44`，但不能单独解读为模型有效，因为方向胜率和超额胜率不支持强结论。
-- 当前 live 分桶样本仍不足，外部模型只能展示、记录和进入观察桶，不能宣传为“高准确率买点模型”。
-- README 中所有外部模型相关能力都应理解为“可校准证据源”和“研究路线”，不是自动交易权威。
+- Chronos-Bolt 已作为可选本地 HTTP 服务跑通，实验记录显示 `chronosLoaded=true`、`fallbackEnabled=false`。
+- 一次 historical fallback 验证使用 NBP 官方黄金 `PLN/g`，方向胜率 `48.33%`，低于 `55.00%` 基准。
+- Profit Factor `1.44` 不能单独包装成“模型有效”，因为方向胜率和超额胜率不支持强结论。
+- live 分桶样本仍不足，外部模型当前定位是观察军师和候选概率特征源，不是交易放大器。
 
 ## Buy/Sell Point Logic
 
-买点判断不是“跌了就买”，也不是“模型看涨就买”。系统会先判断价格是否可信，再判断位置是否有赔率，最后判断风险是否允许。
+<img src="./docs/assets/figures/buy-point-decision-engine.png" alt="Buy point decision engine" width="100%" />
 
-## Fig.4 From Market State to Actionable Trade Plan
+**Fig. 4 | Risk-first buy/sell point decision engine.** 买点不是“跌了就买”，也不是“模型看涨就买”。系统先看证据栈，再经过七层 gate，最后生成可执行但可否决的交易计划。任何一层触发硬风险，结论都会从 strong/watch 降为 wait/avoid。
 
-```mermaid
-flowchart TB
-  START["Market State"]
+### Seven Gates
 
-  subgraph L["Seven Gates"]
-    ENV["1. 环境<br/>宏观不逆风"]
-    DIR["2. 方向<br/>概率与趋势"]
-    POS["3. 位置<br/>回撤与估值"]
-    PAT["4. 形态<br/>支撑/压力/确认"]
-    RR["5. 赔率<br/>RR >= 2:1"]
-    RISK["6. 风控<br/>事件/数据/心理纪律"]
-    EXEC["7. 执行<br/>触发价与止损"]
-  end
-
-  subgraph HARD["Hard Vetoes"]
-    HP["critical provider unhealthy"]
-    HE["event risk elevated"]
-    HW["weak external bucket"]
-    HS["stop loss unclear"]
-    HC["higher timeframe conflict"]
-  end
-
-  subgraph OUT["Outputs"]
-    STRONG2["强买点观察"]
-    WATCH["买点观察"]
-    WAIT["等待确认"]
-    AVOID["风险暂避"]
-    REDUCE["止盈 / 减仓观察"]
-  end
-
-  subgraph PLAN2["Trade Plan Fields"]
-    ENTRY["entry_zone"]
-    TRIG["trigger_price"]
-    STOP["stop_loss"]
-    TP["TP1 / TP2"]
-    SIZE["position_suggestion"]
-    INV["invalidation_condition"]
-  end
-
-  START --> ENV --> DIR --> POS --> PAT --> RR --> RISK --> EXEC
-  HP --> RISK
-  HE --> RISK
-  HW --> RISK
-  HS --> RISK
-  HC --> RISK
-  EXEC --> STRONG2
-  EXEC --> WATCH
-  EXEC --> WAIT
-  RISK --> AVOID
-  POS --> REDUCE
-  STRONG2 --> ENTRY
-  WATCH --> TRIG
-  WAIT --> STOP
-  ENTRY --> TP
-  TRIG --> SIZE
-  STOP --> INV
-
-  classDef gate fill:#eef2ff,stroke:#4f46e5,color:#111827
-  classDef veto fill:#fee2e2,stroke:#dc2626,color:#111827
-  classDef output fill:#ecfdf5,stroke:#059669,color:#111827
-  classDef plan fill:#f8fafc,stroke:#64748b,color:#111827
-  class ENV,DIR,POS,PAT,RR,RISK,EXEC gate
-  class HP,HE,HW,HS,HC veto
-  class STRONG2,WATCH,WAIT,AVOID,REDUCE output
-  class ENTRY,TRIG,STOP,TP,SIZE,INV plan
-```
-
-### Score and Level Semantics
-
-当前买点评分是多层规则门控，不是单一神经网络分数。它既会加分，也会设置分数上限。
-
-| Signal | Meaning | Typical constraints |
+| Gate | Question | Failure behavior |
 | --- | --- | --- |
-| `strong` | 高质量买点观察 | 分数通常需要 `>=72`，交易计划置信度不能低，且不能被事件/数据/弱桶否决 |
-| `watch` | 买点观察 | 分数通常需要 `>=45`，适合观察关键价位和确认条件 |
-| `avoid` / low score | 风险暂避 | 数据异常、事件风险、追高、弱桶、止损不清晰或多周期冲突时触发 |
+| 1. Data | 报价是否新鲜、可信、没有异常跳价？ | 降级或只观察 |
+| 2. Direction | 本地概率、趋势和外部军师是否同向？ | 等待确认 |
+| 3. Position | 是否处在合理回撤、估值或支撑位置？ | 不追高 |
+| 4. Structure | 支撑/压力/形态是否给出确认和失效价？ | 不做无止损计划 |
+| 5. Reward/Risk | 入场到止损/止盈的赔率是否合理？ | 降仓或不参与 |
+| 6. Event | CPI、FOMC、非农等窗口是否过热？ | 暂避 |
+| 7. Discipline | 是否存在追高、急跌冲动、连续失败？ | 冷却或轻仓 |
 
-外部模型在这里不是主裁判。它只在“样本足够、分桶表现不弱、与本地规则共振”时给低权重证据；如果样本不足或命中弱桶，权重为 0。
+### Signal Language
 
-## Backtest, Bucket Gate and Model Validation
+| Signal | What it means | User-facing interpretation |
+| --- | --- | --- |
+| `strong` | 多层证据共振，风控未否决，交易计划清楚 | 强买点观察，不等于无脑买入 |
+| `watch` | 出现买点条件，但仍缺确认或样本不足 | 盯关键价，等待触发 |
+| `wait` | 有线索但赔率、数据或周期不够好 | 不急，等更便宜或更明确 |
+| `avoid` | 数据、事件、形态或心理纪律风险过高 | 暂避，先保护本金 |
 
-专业交易系统最容易犯的错是用漂亮回测安慰自己。因此项目把验证设计成“分桶、隔离、基准对照、概率校准”的闭环。
+## Beginner Translation
 
-## Fig.5 Historical Backtest and Live Gate Feedback Loop
+页面最终要把复杂模型翻译成 5 个小白能读懂的问题：
 
-```mermaid
-flowchart LR
-  subgraph SRC["Sample Origins"]
-    HIST["historical<br/>preheat / screening"]
-    PAPER["paper / live<br/>gate evidence"]
-    PROD["production<br/>display and monitoring"]
-  end
+1. **现在做什么？** 等待、观察、小仓、确认后参与，还是暂避。
+2. **为什么？** 哪些证据支持，哪些证据反对。
+3. **怎么做？** 入场区、触发价、止损、TP1/TP2、最大仓位。
+4. **错了怎么办？** 跌破/突破哪个价位说明形态或计划失效。
+5. **为什么不能重仓？** 数据质量、事件窗口、弱桶、回撤、心理纪律是否限制仓位。
 
-  subgraph SNAP2["Immutable Snapshot"]
-    INPUT["input summary"]
-    MODEL["model output"]
-    NOW["current price"]
-    FUT["future settlement"]
-    HIT["hit / miss"]
-    KEY["bucket key"]
-  end
+## Validation Methodology
 
-  subgraph MET["Metrics"]
-    QS2["qualifiedSamples"]
-    WR["winRate"]
-    BWR["baselineWinRate"]
-    EWR["excessWinRate"]
-    PF["profitFactor"]
-    BR["Brier / ECE"]
-    DD["maxDrawdown"]
-  end
-
-  subgraph STATE["Gate States"]
-    OBS["Observe"]
-    CAND["Candidate"]
-    LOW["Low Weight"]
-    BLOCK["Blocked"]
-  end
-
-  UI["Validation Tab"]
-  CAP["Strategy Weight Cap"]
-  NEXT["Future Snapshots"]
-
-  HIST --> SNAP2
-  PAPER --> SNAP2
-  PROD --> SNAP2
-  INPUT --> QS2
-  MODEL --> WR
-  NOW --> BWR
-  FUT --> EWR
-  HIT --> PF
-  KEY --> BR
-  QS2 --> OBS
-  WR --> CAND
-  BWR --> CAND
-  EWR --> LOW
-  PF --> LOW
-  BR --> BLOCK
-  DD --> BLOCK
-  OBS --> UI
-  CAND --> UI
-  LOW --> CAP
-  BLOCK --> CAP
-  CAP --> NEXT
-  NEXT --> SNAP2
-  HIST -. "never directly amplifies live gate" .-> OBS
-  PAPER --> CAND
-
-  classDef sample fill:#e0f2fe,stroke:#0284c7,color:#111827
-  classDef snapshot fill:#fff7ed,stroke:#ea580c,color:#111827
-  classDef metric fill:#ecfdf5,stroke:#059669,color:#111827
-  classDef state fill:#f8fafc,stroke:#64748b,color:#111827
-  classDef block fill:#fee2e2,stroke:#dc2626,color:#111827
-  class HIST,PAPER,PROD sample
-  class INPUT,MODEL,NOW,FUT,HIT,KEY snapshot
-  class QS2,WR,BWR,EWR,PF,BR,DD metric
-  class OBS,CAND,LOW state
-  class BLOCK block
-```
-
-### Bucket Metrics
-
-外部模型和本地策略都会被拆成可复盘桶。常见维度包括：
-
-| Bucket dimension | Examples |
+| Metric | Why it matters |
 | --- | --- |
-| Signal | `strong`、`watch`、score bands |
-| Model | provider、概率区间、置信度区间、本地共振 |
-| Market state | session、pattern、macro、valuation、confluence |
-| Risk state | event risk、source health、data quality |
-| Horizon | `5m`、`15m`、`60m`、`240m` |
+| `qualifiedSamples` | 样本太少时禁止过度解释 |
+| `winRate` | 看方向命中率 |
+| `baselineWinRate` | 防止把自然上涨行情误认为模型能力 |
+| `excessWinRate` | 判断是否相对基准有增益 |
+| `profitFactor` | 判断盈亏结构，而不只看胜率 |
+| `Brier Score` / calibration | 判断概率是否可信 |
+| `MAE/MFE` | 判断入场后最大不利/有利波动 |
+| `maxDrawdown` | 判断最坏路径风险 |
+| `sourceHealth` | 判断数据源故障是否污染信号 |
 
-关键指标包括 `qualifiedSamples`、`winRate`、`baselineWinRate`、`excessWinRate`、`averageReturn`、`profitFactor`、`maxDrawdown`、`MAE/MFE`、`Brier Score`、`calibrationError` 和 `reliability`。
+### Historical, Paper, Live and Production Separation
 
-### External Model Gate
-
-| Gate state | Rule | Strategy effect |
+| Sample origin | Use | Rule |
 | --- | --- | --- |
-| Insufficient | 样本不足 | 只展示，不加权 |
-| Weak | `reliability < 45`、`excessWinRate < 0`、`profitFactor < 1.05` 或 `Brier > 0.26` | 权重为 0 |
-| Neutral | 样本足够但优势不明显 | 最多低权重参考 |
-| Strong | `qualifiedSamples >= 20`、`reliability >= 55`、`excessWinRate >= 0`、`profitFactor >= 1.05`，且模型与本地规则同向 | 允许小幅加分，但不能覆盖风控 |
-
-## Fig.6 Beginner-Friendly Path: Signal to Safe Action Plan
-
-```mermaid
-flowchart TB
-  USER["用户看到当前结论"]
-  NOW2["现在做什么？"]
-  WHY2["为什么？"]
-  HOW2["怎么做？"]
-  WRONG["什么情况说明错了？"]
-  SIZE2["为什么不能重仓？"]
-
-  subgraph ACTION2["Possible Actions"]
-    EMPTY["空仓等待"]
-    OBS2["观察关键价"]
-    SMALL["小仓分批"]
-    CONFIRM["确认后参与"]
-    TAKE["止盈 / 减仓"]
-  end
-
-  subgraph WARN["Risk Warnings"]
-    EVENT["重大事件前不追单"]
-    STOP2["止损距离过大则降仓"]
-    DATA["数据源异常只观察"]
-    COOL2["连续失败进入冷却"]
-  end
-
-  subgraph PLAN3["Readable Plan"]
-    EZ["入场区"]
-    KP["触发价"]
-    SL["止损"]
-    TPP["TP1 / TP2"]
-    MAX["最大仓位"]
-    FAIL2["失效条件"]
-  end
-
-  REVIEW["记录结果 / 未执行原因"]
-  UPDATE["回测桶更新"]
-  NEXTSIG["下次信号增强或降级"]
-
-  USER --> NOW2 --> ACTION2
-  USER --> WHY2 --> WARN
-  USER --> HOW2 --> PLAN3
-  USER --> WRONG --> FAIL2
-  USER --> SIZE2 --> MAX
-  ACTION2 --> REVIEW
-  EZ --> REVIEW
-  KP --> REVIEW
-  SL --> REVIEW
-  TPP --> REVIEW
-  MAX --> REVIEW
-  EVENT --> REVIEW
-  STOP2 --> REVIEW
-  DATA --> REVIEW
-  COOL2 --> REVIEW
-  REVIEW --> UPDATE --> NEXTSIG
-
-  classDef user fill:#f8fafc,stroke:#64748b,color:#111827
-  classDef action fill:#ecfdf5,stroke:#059669,color:#111827
-  classDef warn fill:#fee2e2,stroke:#dc2626,color:#111827
-  classDef plan fill:#eef2ff,stroke:#4f46e5,color:#111827
-  class USER,NOW2,WHY2,HOW2,WRONG,SIZE2,REVIEW,UPDATE,NEXTSIG user
-  class EMPTY,OBS2,SMALL,CONFIRM,TAKE action
-  class EVENT,STOP2,DATA,COOL2 warn
-  class EZ,KP,SL,TPP,MAX,FAIL2 plan
-```
-
-## UI Workflow
-
-页面不是为了让用户盯一个分数冲动交易，而是把复杂系统翻译成可复核的操作语言。
-
-| Tab | What it explains | Beginner translation |
-| --- | --- | --- |
-| 决策 | 当前是 strong、watch、wait 还是 avoid | 现在要不要进入观察区 |
-| 计划 | 入场区、触发价、止损、止盈、仓位 | 如果参与，错了在哪里认错 |
-| 风控 | 事件风险、数据质量、心理纪律 | 为什么不能冲动追单或重仓 |
-| 依据 | 宏观、形态、技术、多源校准、专家分歧 | 这个判断靠什么证据 |
-| 验证 | 回测桶、外部模型表现、弱桶提示 | 这个信号历史同类场景是否可靠 |
-
-## Project Structure
-
-```text
-.
-├── api/                         # Vercel serverless API
-├── apps/
-│   ├── server/                  # Express + TypeScript backend
-│   └── web/                     # React + Vite frontend
-├── docs/                        # Architecture, model card, research and logs
-├── scripts/                     # Local AI, Chronos verification and historical validation
-├── services/
-│   └── chronos-bolt/            # Optional FastAPI Chronos-Bolt inference service
-├── .env.production.example      # Production env template with placeholders only
-├── PRODUCTION_DEPLOYMENT.md     # Deployment guide
-└── render.yaml                  # Render blueprint
-```
+| `historical` | 预热、筛选、离线 sanity check | 不能直接放大 production 信号 |
+| `paper/live` | 真实运行中的纸面样本 | 可进入 live gate |
+| `production` | 前端展示和监控 | 必须受风控与 gate 约束 |
 
 ## Quick Start
 
@@ -668,15 +207,13 @@ npm start
 
 ## Optional Chronos-Bolt Local Advisor
 
-Run the full local stack with the optional Chronos-Bolt service:
-
 ```bash
 npm run dev:ai
 ```
 
-This starts the Python service under `services/chronos-bolt`, waits for `/health`, configures the main server with `EXTERNAL_TS_MODEL_URL`, and launches the web app. The service is useful for research and paper/live evidence collection, but it does not make Chronos a validated trade amplifier by itself.
+This starts the optional Python Chronos-Bolt service, waits for `/health`, configures the main server with `EXTERNAL_TS_MODEL_URL`, and launches the web app. It is useful for research and paper/live evidence collection, but it does not make Chronos a validated trade amplifier by itself.
 
-Verify the service:
+Verify Chronos:
 
 ```bash
 CHRONOS_SERVICE_URL=http://127.0.0.1:8000 \
@@ -686,13 +223,30 @@ npm run verify:chronos
 
 ## Historical Validation
 
-Run offline historical validation:
-
 ```bash
 npm run validate:historical
 ```
 
-The script tries Yahoo `GC=F` first and can fall back to NBP official gold data when network access is limited. NBP `PLN/g` is not the same trading口径 as ICBC accumulation gold `CNY/g`; results from that fallback are useful for pipeline preheating and sanity checks, not for claiming ICBC live accuracy.
+The script tries Yahoo `GC=F` first and can fall back to NBP official gold data when network access is limited. NBP `PLN/g` is not the same口径 as ICBC accumulation gold `CNY/g`; fallback results are useful for pipeline preheating and sanity checks, not for claiming ICBC live accuracy.
+
+## Project Structure
+
+```text
+.
+├── api/                         # Vercel serverless API
+├── apps/
+│   ├── server/                  # Express + TypeScript backend
+│   └── web/                     # React + Vite frontend
+├── docs/
+│   ├── assets/figures/          # Publication-style README figures
+│   └── *.md                     # Architecture, model card, research and logs
+├── scripts/                     # Chronos verification and historical validation
+├── services/
+│   └── chronos-bolt/            # Optional FastAPI Chronos-Bolt inference service
+├── .env.production.example
+├── PRODUCTION_DEPLOYMENT.md
+└── render.yaml
+```
 
 ## Scripts
 
@@ -710,35 +264,31 @@ npm run build
 
 ## Deployment
 
-Supported deployment modes:
-
 | Mode | Notes |
 | --- | --- |
 | Node/Docker single instance | Good for local or private server deployment |
-| Vercel serverless API | Requires persistent storage choice for stable historical samples |
-| Render blueprint | Includes service-oriented deployment path |
-| SQLite | Good for single-instance persistence |
-| Postgres HTTP SQL gateway | Better for serverless and multi-instance environments |
-| External model service | Chronos-Bolt or other provider runs as a separate HTTP service |
+| Vercel serverless API | Needs persistent storage for stable historical samples |
+| Render blueprint | Service-oriented deployment path |
+| SQLite | Single-instance persistence |
+| Postgres HTTP SQL gateway | Serverless or multi-instance persistence |
+| External model service | Chronos-Bolt or other provider runs as separate HTTP service |
 
 See [PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md).
 
 ## Research Roadmap
 
-The roadmap is intentionally conservative. New models should first enter observe/paper mode, accumulate snapshots, pass bucket validation, and only then receive limited strategy weight.
-
 | Stage | Candidate | Role |
 | --- | --- | --- |
 | 0 | Better ICBC/AU9999 history | Fix data口径 before trusting model results |
-| 1 | Chronos-2 covariates | Test whether multivariate and covariate-aware forecasting improves RMB gold signals |
+| 1 | Chronos-2 covariates | Test multivariate and covariate-aware forecasting |
 | 2 | TimesFM | Independent zero-shot foundation-model advisor |
 | 3 | NeuralForecast with PatchTST/TFT/NHITS | Local trainable baseline with walk-forward validation |
 | 4 | FinGPT-style text features | Convert news/events into timestamped features, not direct trade decisions |
-| 5 | FinRL-style execution simulator | Study position sizing and execution only after prediction edge is validated |
+| 5 | FinRL-style execution simulator | Study position sizing after prediction edge is validated |
 
 ## References
 
-Core project docs:
+Project docs:
 
 - [Architecture](./docs/ARCHITECTURE.md)
 - [Model Card](./docs/MODEL_CARD.md)
@@ -747,7 +297,7 @@ Core project docs:
 - [Data Source Provider Audit](./docs/DATA_SOURCE_PROVIDER_AUDIT.md)
 - [Chronos-Bolt Service](./services/chronos-bolt/README.md)
 
-External model references:
+Model references:
 
 - [Chronos: Learning the language of time series](https://www.amazon.science/publications/chronos-learning-the-language-of-time-series)
 - [Chronos repository](https://github.com/amazon-science/chronos-forecasting)
