@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { afterEach, describe, it } from 'node:test'
 
 import {
@@ -36,6 +39,7 @@ describe('market providers', () => {
     delete process.env.CENTRAL_BANK_GOLD_CSV_URL
     delete process.env.CME_GOLD_OI_CSV_URL
     delete process.env.CME_GOLD_VOLUME_CSV_URL
+    delete process.env.CME_GOLD_VOLUME_CSV_FILE
     delete process.env.WGC_GOLD_ETF_FLOW_API_URL
     delete process.env.CENTRAL_BANK_GOLD_PAGE_URL
     delete process.env.ZHESHANG_ACCUMULATION_GOLD_URL
@@ -208,16 +212,18 @@ describe('market providers', () => {
     assert.equal(result.data?.value, 230)
   })
 
-  it('uses Yahoo GC futures volume as CME volume proxy when official CSV is not configured', async () => {
-    globalThis.fetch = (async () => Response.json({
-      chart: {
-        result: [{
-          meta: { regularMarketTime: 1778198400 },
-          timestamp: [1777593600, 1778198400],
-          indicators: { quote: [{ volume: [190000, 220000] }] },
-        }],
-      },
-    })) as typeof fetch
+  it('parses CME volume from a local CSV file without Yahoo fallback', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'gold-cme-volume-'))
+    const csvPath = path.join(tempDir, 'cme-volume.csv')
+    await writeFile(csvPath, [
+      'Date,Volume',
+      '2026-05-15,"220,000"',
+      '2026-05-14,"190,000"',
+    ].join('\n'))
+    process.env.CME_GOLD_VOLUME_CSV_FILE = csvPath
+    globalThis.fetch = (async () => {
+      throw new Error('CME volume local CSV should not call network fetch')
+    }) as typeof fetch
 
     const result = await fetchCmeGoldVolume()
 
@@ -225,6 +231,16 @@ describe('market providers', () => {
     assert.equal(result.data?.symbol, 'CME_GOLD_VOLUME')
     assert.equal(result.data?.value, 220000)
     assert.equal(result.data?.previousClose, 190000)
+    await rm(tempDir, { recursive: true, force: true })
+  })
+
+  it('does not fallback to Yahoo when CME volume CSV is not configured', async () => {
+    globalThis.fetch = (async () => Response.json({})) as typeof fetch
+
+    const result = await fetchCmeGoldVolume()
+
+    assert.equal(result.status, 'unavailable')
+    assert.match(result.error ?? '', /CME_GOLD_VOLUME_CSV_URL/)
   })
 
   it('records provider health when probing all providers', async () => {
@@ -232,6 +248,7 @@ describe('market providers', () => {
     process.env.GLD_HOLDINGS_CSV_URL = 'https://example.com/gld.csv'
     process.env.LBMA_GOLD_PM_CSV_URL = 'https://example.com/lbma.csv'
     process.env.CME_GOLD_OI_CSV_URL = 'https://example.com/oi.csv'
+    process.env.CME_GOLD_VOLUME_CSV_URL = 'https://example.com/volume.csv'
     const responseByUrl = new Map<string, Response>([
       ['gold.org/api', Response.json({
         chartData: {
@@ -258,6 +275,7 @@ describe('market providers', () => {
       ['gld.csv', new Response('Date,Tonnes in Trust\n2026-05-15,930\n2026-05-14,929')],
       ['lbma.csv', new Response('Date,Gold PM USD\n2026-05-15,3380')],
       ['oi.csv', new Response('Date,Open Interest\n2026-05-15,501234')],
+      ['volume.csv', new Response('Date,Volume\n2026-05-15,220000')],
       ['blog.xml', new Response('<rss><channel><item><title>Gold rallies on rate cut hopes</title></item></channel></rss>')],
       ['news.google.com', new Response('<rss><channel><item><title>Gold rallies on safe haven demand</title></item></channel></rss>')],
     ])
@@ -268,8 +286,6 @@ describe('market providers', () => {
           chart: {
             result: [{
               meta: { regularMarketPrice: 3380, chartPreviousClose: 3370, regularMarketTime: 1778198400 },
-              timestamp: [1777593600, 1778198400],
-              indicators: { quote: [{ volume: [190000, 220000] }] },
             }],
           },
         })

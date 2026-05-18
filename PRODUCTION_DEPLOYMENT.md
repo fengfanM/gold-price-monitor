@@ -33,6 +33,7 @@ CME_GOLD_OI_CSV_URL=https://your-cme-open-interest.csv
 CME_GOLD_OI_OFFICIAL_CSV_URL=https://your-cme-authorized-open-interest.csv
 CME_GOLD_OI_CSV_AUTH_HEADER="Authorization: Bearer your-token"
 CME_GOLD_VOLUME_CSV_URL=https://your-cme-volume.csv
+CME_GOLD_VOLUME_CSV_FILE=/var/data/gold-monitor/cme-volume.csv
 GOLD_NEWS_RSS_URLS=https://news.google.com/rss/search?q=gold%20price
 GOLD_BLOGGER_RSS_URLS=https://news.google.com/rss/search?q=gold%20analyst%20outlook
 ```
@@ -131,7 +132,7 @@ CSV 文件默认按“最新行在第一行”解析，至少需要一个日期�
 - `CENTRAL_BANK_GOLD_PAGE_URL`：未配置 CSV 时默认尝试 World Gold Council 央行购金研究页。
 - `CME_GOLD_OI_CSV_URL`：列名可包含 `open interest`、`openinterest`、`oi`、`value`。
 - `CME_GOLD_OI_OFFICIAL_CSV_URL`：CME 授权未平仓源别名；`CME_GOLD_OI_CSV_AUTH_HEADER` 可传授权 header。
-- `CME_GOLD_VOLUME_CSV_URL`：列名可包含 `volume`、`total volume`、`value`；未配置时用 Yahoo `GC=F` 日成交量作短线活跃度代理。
+- `CME_GOLD_VOLUME_CSV_URL` / `CME_GOLD_VOLUME_CSV_FILE`：列名可包含 `volume`、`total volume`、`value`；未配置时不再 fallback 到 Yahoo，避免生产高频采集触发 Yahoo 429。
 - `ZHESHANG_ACCUMULATION_GOLD_URL`：浙商积存金参考源。默认使用第三方文本镜像，只参与“银行参考/多源校准”，不替代工银官方报价；若有浙商官方或自建镜像，可配置为 JSON 并用 `ZHESHANG_ACCUMULATION_GOLD_JSON_PATH` 指向价格字段。
 - `AU9999_REFERENCE_URL`：可选 AU9999 备用参考源。已有上金所延时页作为核心锚；该项用于官方源不可用时补充校准。
 

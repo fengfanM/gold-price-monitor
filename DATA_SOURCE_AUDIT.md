@@ -15,8 +15,8 @@
 - 工行积存金：主报价源，用于核心价格。
 - 工行公开页：备用报价源。
 - 上金所延时行情：国内锚点，用于校准工行价格。
-- Yahoo：国际黄金期货、美元指数、美元/人民币。
-- FRED：实际利率、通胀预期、VIX、联邦基金利率、10Y 美债、收益率曲线。
+- Yahoo：国际黄金期货免费代理源；生产需限频、缓存或替换为授权行情。
+- FRED：美元指数广义指数、美元/人民币、实际利率、通胀预期、VIX、联邦基金利率、10Y 美债、收益率曲线。
 - 金投网：国内黄金、国际黄金、国际白银备用源。
 - COT：默认尝试 Nasdaq Data Link / Quandl 风格 CSV，也支持 `COT_GOLD_NET_URL`。
 - Google News RSS：新闻情绪与博主/分析师观点的默认兜底 RSS。
@@ -25,7 +25,7 @@
 
 - `WGC_ETF_FLOW`：默认尝试 World Gold Council 的 gold.org 图表 API，生产可用 `WGC_GOLD_ETF_FLOW_CSV_URL` 或 `WGC_GOLD_ETF_FLOW_API_URL` 固定数据源。
 - `CENTRAL_BANK_GOLD`：默认尝试 World Gold Council 央行购金研究页，解析最新公开季度净购金；生产建议用 `CENTRAL_BANK_GOLD_CSV_URL` 固化表格。
-- `CME_GOLD_VOLUME`：默认使用 Yahoo `GC=F` 日成交量作为 COMEX/CME 成交活跃度代理；生产可用 `CME_GOLD_VOLUME_CSV_URL` 替换为官方 CSV。
+- `CME_GOLD_VOLUME`：不再默认使用 Yahoo `GC=F` 日成交量代理；生产需配置 `CME_GOLD_VOLUME_CSV_URL` 或 `CME_GOLD_VOLUME_CSV_FILE`。
 
 ## 生产必须配置才算真实官方源
 

@@ -20,7 +20,7 @@ import {
   getProviderHealthHistory,
   fetchLbmaGoldPm,
   fetchWorldGoldCouncilEtfFlow,
-  fetchYahooQuote as fetchProviderYahooQuote,
+  fetchYahooQuote,
   type NewsSentimentData,
   type ProviderQuote,
   type ProviderResult,
@@ -37,17 +37,17 @@ export async function buildMarketContext(
 ): Promise<MarketContext> {
   const [spotGoldUsd, dollarIndex, usdCny] = await Promise.all([
     fetchProviderFactor(
-      fetchProviderYahooQuote('GC=F', '国际黄金期货', '美元/盎司'),
+      fetchYahooQuote('GC=F', '国际黄金期货', '美元/盎司'),
       scoreGoldMomentum,
       { id: 'GC=F', label: '国际黄金期货', unit: '美元/盎司' },
     ),
     fetchProviderFactor(
-      fetchProviderYahooQuote('DX-Y.NYB', '美元指数', '点'),
+      fetchFredLatest('DTWEXBGS', '美元指数(FRED广义)', '指数', 'DX-Y.NYB'),
       scoreDollarIndex,
       { id: 'DX-Y.NYB', label: '美元指数', unit: '点' },
     ),
     fetchProviderFactor(
-      fetchProviderYahooQuote('USDCNY=X', '美元/人民币', 'CNY'),
+      fetchFredLatest('DEXCHUS', '美元/人民币(FRED)', 'CNY', 'USDCNY=X'),
       scoreUsdCny,
       { id: 'USDCNY=X', label: '美元/人民币', unit: 'CNY' },
     ),

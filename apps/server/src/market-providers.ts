@@ -1,3 +1,6 @@
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
+
 const DEFAULT_PROVIDER_TIMEOUT_MS = Number(process.env.MARKET_PROVIDER_TIMEOUT_MS ?? '1800')
 const DISABLE_EXTERNAL_PROVIDERS = process.env.DISABLE_EXTERNAL_MARKET_CONTEXT === '1'
 const BROWSER_USER_AGENT = [
@@ -271,6 +274,7 @@ export async function fetchFredLatest(
   seriesId: string,
   label: string,
   unit: string,
+  outputSymbol = seriesId,
 ): Promise<ProviderResult<ProviderQuote>> {
   return safeProvider('fred', async () => {
     const series = await fetchFredSeries(seriesId)
@@ -282,7 +286,7 @@ export async function fetchFredLatest(
 
     return {
       provider: 'fred',
-      symbol: seriesId,
+      symbol: outputSymbol,
       label,
       value: latest.value,
       previousClose: previous?.value ?? null,
@@ -562,18 +566,18 @@ export async function fetchCmeGoldOpenInterest(): Promise<ProviderResult<Provide
 }
 
 export async function fetchCmeGoldVolume(): Promise<ProviderResult<ProviderQuote>> {
-  if (process.env.CME_GOLD_VOLUME_CSV_URL) {
-    return fetchConfiguredOfficialSeries(CONFIGURED_OFFICIAL_SERIES.cmeGoldVolume)
-  }
-
-  return fetchYahooDailyVolumeQuote('GC=F', 'CME/COMEX 黄金成交量代理', '张')
+  return fetchConfiguredOfficialSeries(CONFIGURED_OFFICIAL_SERIES.cmeGoldVolume, [
+    process.env.CME_GOLD_VOLUME_CSV_URL,
+    process.env.CME_GOLD_VOLUME_OFFICIAL_CSV_URL,
+    process.env.CME_GOLD_VOLUME_CSV_FILE,
+  ])
 }
 
 export async function probeAllMarketProviders(): Promise<ProviderHealthRecord[]> {
   const probes: ProviderProbeDefinition[] = [
     { id: 'GC=F', label: '国际黄金期货', envVars: [], sourceTier: 'critical', participatesInScoring: true, run: () => fetchYahooQuote('GC=F', '国际黄金期货', '美元/盎司') },
-    { id: 'DX-Y.NYB', label: '美元指数', envVars: [], sourceTier: 'critical', participatesInScoring: true, run: () => fetchYahooQuote('DX-Y.NYB', '美元指数', '点') },
-    { id: 'USDCNY=X', label: '美元/人民币', envVars: [], sourceTier: 'critical', participatesInScoring: true, run: () => fetchYahooQuote('USDCNY=X', '美元/人民币', 'CNY') },
+    { id: 'DX-Y.NYB', label: '美元指数(FRED广义)', envVars: ['FRED_API_KEY'], sourceTier: 'critical', participatesInScoring: true, run: () => fetchFredLatest('DTWEXBGS', '美元指数(FRED广义)', '指数', 'DX-Y.NYB') },
+    { id: 'USDCNY=X', label: '美元/人民币(FRED)', envVars: ['FRED_API_KEY'], sourceTier: 'critical', participatesInScoring: true, run: () => fetchFredLatest('DEXCHUS', '美元/人民币(FRED)', 'CNY', 'USDCNY=X') },
     { id: 'DFII10', label: '10Y TIPS 实际利率', envVars: ['FRED_API_KEY'], sourceTier: 'critical', participatesInScoring: true, run: () => fetchFredLatest('DFII10', '10Y TIPS 实际利率', '%') },
     { id: 'T10YIE', label: '10Y 通胀预期', envVars: ['FRED_API_KEY'], sourceTier: 'core', participatesInScoring: true, run: () => fetchFredLatest('T10YIE', '10Y 通胀预期', '%') },
     { id: 'VIXCLS', label: 'VIX 恐慌指数', envVars: ['FRED_API_KEY'], sourceTier: 'supporting', participatesInScoring: true, run: () => fetchFredLatest('VIXCLS', 'VIX 恐慌指数', '点') },
@@ -585,7 +589,7 @@ export async function probeAllMarketProviders(): Promise<ProviderHealthRecord[]>
     { id: 'WGC_ETF_FLOW', label: 'World Gold Council ETF 资金流', envVars: ['WGC_GOLD_ETF_FLOW_CSV_URL', 'WGC_GOLD_ETF_FLOW_API_URL'], sourceTier: 'core', participatesInScoring: true, run: () => fetchWorldGoldCouncilEtfFlow() },
     { id: 'CENTRAL_BANK_GOLD', label: '全球央行购金', envVars: ['CENTRAL_BANK_GOLD_CSV_URL', 'CENTRAL_BANK_GOLD_PAGE_URL'], sourceTier: 'supporting', participatesInScoring: true, run: () => fetchCentralBankGoldBuying() },
     { id: 'CME_GOLD_OI', label: 'CME 黄金未平仓合约', envVars: ['CME_GOLD_OI_CSV_URL', 'CME_GOLD_OI_OFFICIAL_CSV_URL', 'CME_GOLD_OI_CSV_AUTH_HEADER'], sourceTier: 'core', participatesInScoring: true, run: () => fetchCmeGoldOpenInterest() },
-    { id: 'CME_GOLD_VOLUME', label: 'CME 黄金成交量', envVars: ['CME_GOLD_VOLUME_CSV_URL', 'CME_GOLD_VOLUME_OFFICIAL_CSV_URL'], sourceTier: 'supporting', participatesInScoring: true, run: () => fetchCmeGoldVolume() },
+    { id: 'CME_GOLD_VOLUME', label: 'CME 黄金成交量', envVars: ['CME_GOLD_VOLUME_CSV_URL', 'CME_GOLD_VOLUME_OFFICIAL_CSV_URL', 'CME_GOLD_VOLUME_CSV_FILE'], sourceTier: 'supporting', participatesInScoring: true, run: () => fetchCmeGoldVolume() },
     { id: 'NEWS', label: '黄金新闻情绪', envVars: ['GOLD_NEWS_RSS_URLS'], sourceTier: 'experimental', participatesInScoring: true, run: () => fetchGoldNewsSentiment() },
     { id: 'BLOGGER', label: '博主/分析师观点', envVars: ['GOLD_BLOGGER_RSS_URLS'], sourceTier: 'experimental', participatesInScoring: true, run: () => fetchGoldBloggerSentiment() },
   ]
@@ -685,42 +689,6 @@ async function fetchFredJson(
   }
   const json = await response.json() as { observations?: Array<{ date: string; value: string }> }
   return parseFredRows(json.observations ?? []).reverse()
-}
-
-async function fetchYahooDailyVolumeQuote(
-  symbol: string,
-  label: string,
-  unit: string,
-): Promise<ProviderResult<ProviderQuote>> {
-  return safeProvider('yahoo-volume', async () => {
-    const response = await fetchYahooChart(symbol)
-    if (!response.ok) {
-      throw new Error(`Yahoo volume ${symbol} HTTP ${response.status}`)
-    }
-    const json = await response.json() as YahooChartResult
-    const result = json.chart?.result?.[0]
-    const volumes = result?.indicators?.quote?.[0]?.volume ?? []
-    const latestIndex = findLastIndex(volumes, (value) => typeof value === 'number' && Number.isFinite(value))
-    if (latestIndex < 0) {
-      throw new Error(`Yahoo ${symbol} 未返回有效成交量`)
-    }
-    const previousIndex = findLastIndex(volumes.slice(0, latestIndex), (value) => typeof value === 'number' && Number.isFinite(value))
-    const updatedAt = result?.timestamp?.[latestIndex]
-      ? new Date(result.timestamp[latestIndex] * 1000).toISOString()
-      : result?.meta?.regularMarketTime
-        ? new Date(result.meta.regularMarketTime * 1000).toISOString()
-        : null
-
-    return {
-      provider: 'yahoo-volume',
-      symbol: 'CME_GOLD_VOLUME',
-      label,
-      value: Number(volumes[latestIndex]),
-      previousClose: previousIndex >= 0 ? Number(volumes[previousIndex]) : null,
-      unit,
-      updatedAt,
-    }
-  })
 }
 
 async function fetchFredCsv(seriesId: string): Promise<ProviderSeriesPoint[]> {
@@ -1008,24 +976,17 @@ function parseCentralBankGoldBuying(html: string) {
   }
 }
 
-async function fetchConfiguredOfficialSeries(config: typeof CONFIGURED_OFFICIAL_SERIES[keyof typeof CONFIGURED_OFFICIAL_SERIES]) {
+async function fetchConfiguredOfficialSeries(
+  config: typeof CONFIGURED_OFFICIAL_SERIES[keyof typeof CONFIGURED_OFFICIAL_SERIES],
+  configuredSources?: Array<string | undefined>,
+) {
   return safeProvider(config.provider, async () => {
-    const url = [config.env, ...config.aliases]
-      .map((env) => process.env[env])
-      .find((value): value is string => Boolean(value))
-    if (!url) {
+    const sources = configuredSources ?? [config.env, ...config.aliases].map((env) => process.env[env])
+    const source = sources.find((value): value is string => Boolean(value))
+    if (!source) {
       throw new Error(`${[config.env, ...config.aliases].join('/')} 未配置`)
     }
-    const response = await fetchWithTimeout(url, {
-      headers: {
-        accept: 'text/csv,text/plain,text/html,*/*',
-        ...authorizedSourceHeaders(config.env),
-      },
-    })
-    if (!response.ok) {
-      throw new Error(`${config.label} HTTP ${response.status}`)
-    }
-    const rows = parseCsv(await response.text())
+    const rows = parseCsv(await readConfiguredCsvSource(source, config.env))
     const latest = rows[0]
     const previous = rows[1]
     if (!latest) {
@@ -1047,6 +1008,26 @@ async function fetchConfiguredOfficialSeries(config: typeof CONFIGURED_OFFICIAL_
       updatedAt: findDateValue(latest),
     }
   })
+}
+
+async function readConfiguredCsvSource(source: string, baseEnv: string) {
+  if (/^https?:\/\//i.test(source)) {
+    const response = await fetchWithTimeout(source, {
+      headers: {
+        accept: 'text/csv,text/plain,text/html,*/*',
+        ...authorizedSourceHeaders(baseEnv),
+      },
+    })
+    if (!response.ok) {
+      throw new Error(`CSV HTTP ${response.status}`)
+    }
+    return response.text()
+  }
+
+  const filePath = source.startsWith('file://')
+    ? new URL(source)
+    : path.resolve(process.cwd(), source)
+  return readFile(filePath, 'utf8')
 }
 
 function findNumericColumn(row: CsvRow, includes: string[]) {
@@ -1072,15 +1053,6 @@ function findFirstNumericColumn(row: CsvRow, candidates: readonly (readonly stri
     }
   }
   return null
-}
-
-function findLastIndex<T>(items: T[], predicate: (item: T) => boolean) {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    if (predicate(items[index])) {
-      return index
-    }
-  }
-  return -1
 }
 
 function scoreNewsTitle(title: string) {
