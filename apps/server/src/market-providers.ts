@@ -3,6 +3,10 @@ import path from 'node:path'
 
 const DEFAULT_PROVIDER_TIMEOUT_MS = Number(process.env.MARKET_PROVIDER_TIMEOUT_MS ?? '5000')
 const DISABLE_EXTERNAL_PROVIDERS = process.env.DISABLE_EXTERNAL_MARKET_CONTEXT === '1'
+const BROWSER_LIKE_HEADERS = {
+  'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  accept: 'text/csv,application/json,text/plain,*/*',
+}
 const BROWSER_USER_AGENT = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
   'AppleWebKit/537.36 (KHTML, like Gecko)',
@@ -687,6 +691,7 @@ async function fetchFredJson(
   })
   const response = await fetchWithTimeout(
     `https://api.stlouisfed.org/fred/series/observations?${params.toString()}`,
+    { headers: BROWSER_LIKE_HEADERS },
   )
   if (!response.ok) {
     throw new Error(`FRED JSON ${seriesId} HTTP ${response.status}`)
@@ -698,6 +703,7 @@ async function fetchFredJson(
 async function fetchFredCsv(seriesId: string): Promise<ProviderSeriesPoint[]> {
   const response = await fetchWithTimeout(
     `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(seriesId)}`,
+    { headers: BROWSER_LIKE_HEADERS },
   )
   if (!response.ok) {
     throw new Error(`FRED CSV ${seriesId} HTTP ${response.status}`)
