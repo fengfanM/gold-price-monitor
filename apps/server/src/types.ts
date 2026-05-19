@@ -339,6 +339,7 @@ export type WalkForwardSample = {
   stopLossPrice?: number | null
   barsObserved?: number
   complete?: boolean
+  failureReason?: string | null
 }
 
 export type BarrierOutcome = 'tp1_hit' | 'stop_loss_hit' | 'no_touch' | 'timeout'
@@ -378,8 +379,16 @@ export type BacktestBucket = {
   stopLossHitRate?: number | null
   noTouchRate?: number | null
   timeoutRate?: number | null
+  incompleteRate?: number | null
   reliability: number
   summary: string
+}
+
+export type FailureAttribution = {
+  reason: string
+  label: string
+  count: number
+  ratio: number
 }
 
 export type ExternalModelBucketDimension =
@@ -460,6 +469,8 @@ export type BacktestMonitor = {
   probabilityModel: BacktestProbabilityMonitor
   externalModel: ExternalModelBacktestMonitor
   failureSamples: WalkForwardSample[]
+  incompleteSampleRate: number | null
+  failureAttribution: FailureAttribution[]
   summary: string
 }
 
@@ -473,9 +484,15 @@ export type PatternKind =
   | 'bullish_engulfing'
   | 'bearish_engulfing'
   | 'doji'
+  | 'morning_star'
+  | 'evening_star'
+  | 'bullish_harami'
+  | 'bearish_harami'
+  | 'three_white_soldiers'
+  | 'three_black_crows'
 
 export type PatternDirection = 'bullish' | 'bearish' | 'neutral'
-export type PatternConfirmationStatus = 'candidate' | 'confirmed'
+export type PatternConfirmationStatus = 'candidate' | 'confirmed' | 'failed'
 
 export type PatternSignal = {
   id: string
@@ -485,6 +502,10 @@ export type PatternSignal = {
   confidence: number
   confirmationStatus?: PatternConfirmationStatus
   confirmationReason?: string
+  confirmationPrice?: number | null
+  stateReason?: string
+  cooldownBars?: number
+  contextTags?: string[]
   detectedAt: string
   keyPrice: number
   necklinePrice: number | null

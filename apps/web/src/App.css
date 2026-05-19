@@ -729,6 +729,11 @@
   background: linear-gradient(135deg, #ecfdf5 0%, #ffffff 72%);
 }
 
+.pattern-card--neutral {
+  border-left-color: #d97706;
+  background: linear-gradient(135deg, #fff7ed 0%, #ffffff 72%);
+}
+
 .pattern-card header {
   display: flex;
   align-items: center;
@@ -2442,6 +2447,22 @@
 .strategy-version-card header span {
   color: #697386;
   font-size: 12px;
+}
+
+.failure-attribution-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.failure-attribution-strip small {
+  padding: 4px 8px;
+  border: 1px solid #fed7aa;
+  border-radius: 999px;
+  color: #9a3412;
+  background: #fff7ed;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .reliability-curve-card {

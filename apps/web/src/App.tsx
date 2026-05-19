@@ -119,6 +119,15 @@ type WalkForwardSample = {
   exitPrice: number
   returnPercent: number
   maxDrawdown: number
+  failureReason?: string | null
+  complete?: boolean
+}
+
+type FailureAttribution = {
+  reason: string
+  label: string
+  count: number
+  ratio: number
 }
 
 type BacktestMonitor = {
@@ -139,6 +148,8 @@ type BacktestMonitor = {
   buckets?: BacktestBucket[]
   externalModel?: ExternalModelBacktestMonitor
   failureSamples: WalkForwardSample[]
+  incompleteSampleRate?: number | null
+  failureAttribution?: FailureAttribution[]
   summary: string
 }
 
@@ -155,6 +166,7 @@ type BacktestBucket = {
   maxDrawdown: number | null
   mae: number | null
   mfe: number | null
+  incompleteRate?: number | null
   reliability: number
   summary: string
 }
@@ -565,10 +577,16 @@ type QuotePayload = {
 
 type PatternSignal = {
   id: string
-  kind: 'double_bottom' | 'double_top' | 'support_rebound' | 'resistance_rejection' | 'hammer' | 'shooting_star' | 'bullish_engulfing' | 'bearish_engulfing' | 'doji'
+  kind: 'double_bottom' | 'double_top' | 'support_rebound' | 'resistance_rejection' | 'hammer' | 'shooting_star' | 'bullish_engulfing' | 'bearish_engulfing' | 'doji' | 'morning_star' | 'evening_star' | 'bullish_harami' | 'bearish_harami' | 'three_white_soldiers' | 'three_black_crows'
   label: string
   direction: 'bullish' | 'bearish' | 'neutral'
   confidence: number
+  confirmationStatus?: 'candidate' | 'confirmed' | 'failed'
+  confirmationReason?: string
+  confirmationPrice?: number | null
+  stateReason?: string
+  cooldownBars?: number
+  contextTags?: string[]
   detectedAt: string
   keyPrice: number
   necklinePrice: number | null
@@ -1138,10 +1156,10 @@ function App() {
           <div className="opportunity-alert__body">
             <strong>
               {buySignal.level === 'strong'
-                ? '强信号 · 买点复核'
+                ? '强复核 · 等触发执行'
                 : buySignal.level === 'watch'
                   ? '观察信号 · 不追价'
-                  : `${signalMeta.label} · 买点观察`}
+                  : `${signalMeta.label} · 条件复核`}
             </strong>
             <span>
               {buySignal.summary}
@@ -1415,14 +1433,14 @@ function OpportunityPanel(props: {
     <article className={`panel opportunity-panel opportunity-panel--${meta.tone}`}>
       <header>
         <AlertTriangle size={16} />
-        <strong>买点观察</strong>
+        <strong>观察复核</strong>
         <span>{meta.label}</span>
       </header>
       <div className="opportunity-score">
         <span>Signal Score</span>
         <strong>{formatScore(props.signal?.score ?? null)}</strong>
       </div>
-      <div className="opportunity-tabs" role="tablist" aria-label="买点观察功能切换">
+      <div className="opportunity-tabs" role="tablist" aria-label="观察复核功能切换">
         {OPPORTUNITY_TABS.map((tab) => (
           <button
             aria-selected={activeTab === tab.id}
@@ -1521,7 +1539,7 @@ function DecisionBriefPanel(props: {
       <div className="decision-brief__grid">
         <MetricCard label="动作" value={action} />
         <MetricCard label="赔率" value={riskReward} />
-        <MetricCard label="上涨概率" value={formatProbability(props.transparency.probability)} />
+        <MetricCard label="TP1先达倾向" value={formatProbability(props.transparency.probability)} />
         <MetricCard label="可靠性" value={props.transparency.reliability === null ? '--' : `${props.transparency.reliability}/100`} />
       </div>
       <p>{position}</p>
@@ -1537,7 +1555,7 @@ function SignalTransparencyPanel(props: { compact?: boolean; transparency: Signa
         <span>{props.transparency.verdict}</span>
       </header>
       <div className="signal-transparency__grid">
-        <MetricCard label="上涨概率" value={formatProbability(props.transparency.probability)} />
+        <MetricCard label="模型倾向" value={formatProbability(props.transparency.probability)} />
         <MetricCard label="回测胜率" value={formatNullablePercent(props.transparency.winRate)} />
         <MetricCard
           label="校准可信度"
@@ -1595,7 +1613,7 @@ function TradePlanPanel(props: { tradePlan: TradePlan | null }) {
   return (
     <section className={`trade-plan trade-plan--${plan.confidence}`}>
       <header>
-        <strong>五段式交易计划</strong>
+        <strong>纸面交易计划模板</strong>
         <span>{plan.actionLabel}</span>
       </header>
       <div className="trade-plan__decision">
@@ -1607,7 +1625,7 @@ function TradePlanPanel(props: { tradePlan: TradePlan | null }) {
         <div>
           <span>风险收益比</span>
           <strong>{plan.riskRewardRatio === null ? '--' : `${plan.riskRewardRatio}:1`}</strong>
-          <small>强信号优先需要 2:1 以上，最好 3:1。</small>
+          <small>强观察最低 2.5:1；未触发价、止损、赔率同时满足前不执行。</small>
         </div>
       </div>
       <div className="trade-plan__levels">
@@ -1623,9 +1641,9 @@ function TradePlanPanel(props: { tradePlan: TradePlan | null }) {
         <strong>{plan.invalidation}</strong>
       </div>
       <SignalList
-        emptyText="暂无交易计划依据"
+        emptyText="暂无纸面计划依据"
         items={plan.rationale}
-        title="计划依据"
+        title="模板依据"
       />
       {plan.warnings.length > 0 ? (
         <SignalList
@@ -2040,8 +2058,15 @@ function BacktestResearchPage(props: {
         <article className="failure-table-card">
           <header>
             <strong>失败样本归因</strong>
-            <span>{failures.length} 条</span>
+            <span>{failures.length} 条 · 未完成 {formatNullablePercent(monitor?.incompleteSampleRate ?? null)}</span>
           </header>
+          {monitor?.failureAttribution && monitor.failureAttribution.length > 0 ? (
+            <div className="failure-attribution-strip">
+              {monitor.failureAttribution.slice(0, 4).map((item) => (
+                <small key={item.reason}>{item.label} {formatNullablePercent(item.ratio)}</small>
+              ))}
+            </div>
+          ) : null}
           {failures.length > 0 ? (
             <div className="failure-table">
               {failures.map((sample) => (
@@ -2050,6 +2075,7 @@ function BacktestResearchPage(props: {
                   <strong>{formatNullablePercent(sample.returnPercent)}</strong>
                   <small>
                     {explainFailureSample(sample)}
+                    {sample.failureReason ? ` · 归因 ${failureReasonText(sample.failureReason)}` : ''}
                     {' · '}
                     入场 {currencyFormatter.format(sample.entryPrice)} · 出场 {currencyFormatter.format(sample.exitPrice)}
                   </small>
@@ -2246,6 +2272,21 @@ function explainFailureSample(sample: WalkForwardSample) {
     return `${drawdownText}，强信号失败样本，优先检查事件风险和止损边界`
   }
   return `${drawdownText}，作为同类情景下的压力样本复核`
+}
+
+function failureReasonText(reason: string) {
+  const labels: Record<string, string> = {
+    sampling_incomplete: '采样不完整',
+    stop_loss_first: '止损先达',
+    event_noise: '事件噪声',
+    pattern_unconfirmed: '形态未确认',
+    macro_pressure: '宏观反向',
+    timeframe_conflict: '周期冲突',
+    source_health: '数据源异常',
+    timeout_or_no_touch: '超时/未触发',
+    adverse_excursion: '最大不利波动',
+  }
+  return labels[reason] ?? reason
 }
 
 function MetricCard(props: { label: string; value: string }) {
@@ -3551,16 +3592,16 @@ function ChartSignalStrip(props: {
       <div className="chart-probability-card">
         <span>{props.prediction.label}</span>
         <strong>
-          涨 {formatProbability(props.prediction.upProbability)}
+          TP1先达 {formatProbability(props.prediction.upProbability)}
           <b> / </b>
-          跌 {formatProbability(props.prediction.downProbability)}
+          止损先达 {formatProbability(props.prediction.downProbability)}
         </strong>
         <small>
           置信 {formatProbability(props.prediction.confidence)} · {props.prediction.basis}
         </small>
       </div>
       <div className="chart-forecast-card">
-        <span>预测区间 · {props.forecast.horizonLabel}</span>
+        <span>情景区间 · {props.forecast.horizonLabel}</span>
         <strong>
           {formatMaybePrice(props.forecast.intervalLow)}
           <b> - </b>
@@ -3577,8 +3618,8 @@ function ChartSignalStrip(props: {
         </strong>
         <small>
           {leadingPattern
-            ? `${leadingPattern.label} 识别置信 ${formatProbability(leadingPattern.confidence)}，TP1先达 ${formatMaybeProbability(props.forecast.successRate)}，失效价 ${formatMaybePrice(props.forecast.failurePrice)}。`
-            : `TP1先达 ${formatMaybeProbability(props.forecast.successRate)}；图中虚线标出统一预测区间和关键价。`}
+            ? `${leadingPattern.label} 识别置信 ${formatProbability(leadingPattern.confidence)}，TP1先达倾向 ${formatMaybeProbability(props.forecast.successRate)}，失效价 ${formatMaybePrice(props.forecast.failurePrice)}。`
+            : `TP1先达倾向 ${formatMaybeProbability(props.forecast.successRate)}；图中虚线标出统一情景区间和关键价。`}
         </small>
       </div>
     </div>
@@ -3596,25 +3637,51 @@ function PatternSignalPanel(props: { patterns: PatternSignal[] }) {
         <article className={`pattern-card pattern-card--${pattern.direction}`} key={pattern.id}>
           <header>
             <strong>{pattern.label}</strong>
-            <span>识别置信 {pattern.confidence}%</span>
+            <span>{patternStatusLabel(pattern)} · 置信 {pattern.confidence}%</span>
           </header>
           <p>{pattern.summary}</p>
           <div>
+            <small>状态 {patternStatusLabel(pattern)}</small>
+            <small>确认 {formatMaybePrice(pattern.confirmationPrice ?? pattern.necklinePrice)}</small>
             <small>关键 {formatMaybePrice(pattern.keyPrice)}</small>
-            <small>颈线 {formatMaybePrice(pattern.necklinePrice)}</small>
             <small>失效 {formatMaybePrice(pattern.invalidationPrice)}</small>
-            <small>目标 {formatMaybePrice(pattern.targetPrice)}</small>
+            <small>情景目标 {formatMaybePrice(pattern.targetPrice)}</small>
+            <small>冷却 {pattern.cooldownBars && pattern.cooldownBars > 0 ? `${pattern.cooldownBars}根` : '--'}</small>
           </div>
           <b>
+            {pattern.stateReason ? `${pattern.stateReason} ` : ''}
             {pattern.explanation}
             {pattern.invalidationPrice !== null
               ? ` 若跌破/突破失效价 ${formatMaybePrice(pattern.invalidationPrice)}，该形态按失败处理。`
               : ''}
+            {' '}禁用条件：{patternDisabledText(pattern)}
           </b>
         </article>
       ))}
     </div>
   )
+}
+
+function patternStatusLabel(pattern: PatternSignal) {
+  if (pattern.confirmationStatus === 'confirmed') {
+    return '已确认'
+  }
+  if (pattern.confirmationStatus === 'failed') {
+    return '已失效'
+  }
+  return '候选'
+}
+
+function patternDisabledText(pattern: PatternSignal) {
+  const conditions = [
+    pattern.confirmationStatus !== 'confirmed' ? '未确认' : null,
+    pattern.confirmationStatus === 'failed' ? '冷却期' : null,
+    pattern.contextTags?.some((tag) => tag === 'blowoff_risk' || tag === 'chase_long_block') ? '高位衰竭/追涨风险' : null,
+    '事件第一波',
+    '关键源异常',
+    '赔率不足',
+  ].filter((item): item is string => Boolean(item))
+  return conditions.join('、')
 }
 
 function ChartInsightDeck(props: {
@@ -3944,7 +4011,7 @@ function buildChartForecast(
       failurePrice: null,
       successRate: null,
       horizonLabel: '未来1-3个周期',
-      basis: '等待足够价格样本后计算预测区间。',
+      basis: '等待足够价格样本后计算情景区间。',
     }
   }
 
@@ -3983,7 +4050,7 @@ function buildChartForecast(
     horizonLabel: '未来1-3个周期',
     basis: leadingPattern
       ? `${leadingPattern.label}仅作为结构提示；暂无后端 TP1 先达校准，失效价优先于目标价。`
-      : '按窗口波动、信号概率和当前价推演，仅用于观察区间；暂无后端 TP1 先达校准。',
+      : '按窗口波动、模型倾向和当前价推演，仅用于观察区间；暂无后端 TP1 先达校准。',
   }
 }
 
@@ -3995,14 +4062,14 @@ function buildChartSignal(signal: OpportunityInfo | null, prediction: ChartPredi
     return {
       tone: 'risk',
       label: '卖点/风险观察',
-      detail: `上涨概率 ${formatProbability(prediction.upProbability)}，控制仓位或等待回落确认。`,
+      detail: `TP1先达倾向 ${formatProbability(prediction.upProbability)}，控制仓位或等待回落确认。`,
     }
   }
 
   if (signal?.level === 'strong' || consensusAction === 'accumulate' || prediction.upProbability >= 68) {
     return {
       tone: 'buy',
-      label: signal?.level === 'strong' ? '强复核信号' : '买点增强',
+      label: signal?.level === 'strong' ? '强复核 · 等触发执行' : '观察增强',
       detail: `TP1先达概率 ${formatProbability(prediction.upProbability)}，仍需触发价、分批和止损纪律。`,
     }
   }
@@ -4010,15 +4077,15 @@ function buildChartSignal(signal: OpportunityInfo | null, prediction: ChartPredi
   if (signal?.level === 'watch' || signal?.level === 'elevated' || prediction.upProbability >= 56) {
     return {
       tone: 'watch',
-      label: '买点观察',
-      detail: `上涨概率 ${formatProbability(prediction.upProbability)}，等待更多数据源共振。`,
+      label: '观察信号 · 不追价',
+      detail: `TP1先达倾向 ${formatProbability(prediction.upProbability)}，等待更多数据源共振。`,
     }
   }
 
   return {
     tone: 'wait',
     label: '等待信号',
-    detail: `上涨概率 ${formatProbability(prediction.upProbability)}，当前更适合观察。`,
+    detail: `模型倾向 ${formatProbability(prediction.upProbability)}，当前更适合观察。`,
   }
 }
 
@@ -4930,7 +4997,7 @@ function normalizeOpportunity(quote: QuotePayload | null): OpportunityInfo | nul
     cleanText(raw.title) ??
     cleanText(raw.summary) ??
     cleanText(raw.reason) ??
-    (level === 'strong' ? '强复核信号' : '买点观察信号')
+    (level === 'strong' ? '强复核信号' : '观察复核信号')
 
   return {
     level,
@@ -5119,15 +5186,15 @@ function formatScore(value: number | null) {
 function getOpportunityMeta(level: OpportunityLevel) {
   if (level === 'strong') {
     return {
-      eyebrow: 'BUY SIGNAL',
-      label: '强复核信号',
+      eyebrow: 'SETUP REVIEW',
+      label: '强复核 · 等触发执行',
       tone: 'strong',
     } as const
   }
 
   if (level === 'critical' || level === 'elevated') {
     return {
-      eyebrow: 'BUY SIGNAL',
+      eyebrow: 'OBSERVATION SIGNAL',
       label: '重点观察',
       tone: 'elevated',
     } as const
@@ -5135,22 +5202,22 @@ function getOpportunityMeta(level: OpportunityLevel) {
 
   if (level === 'watch') {
     return {
-      eyebrow: 'BUY SIGNAL',
-      label: '观察中',
+      eyebrow: 'OBSERVATION SIGNAL',
+      label: '观察信号 · 不追价',
       tone: 'watch',
     } as const
   }
 
   if (level === 'normal') {
     return {
-      eyebrow: 'BUY SIGNAL',
+      eyebrow: 'SETUP REVIEW',
       label: '普通',
       tone: 'normal',
     } as const
   }
 
   return {
-    eyebrow: 'BUY SIGNAL',
+    eyebrow: 'WAIT',
     label: '等待信号',
     tone: 'muted',
   } as const

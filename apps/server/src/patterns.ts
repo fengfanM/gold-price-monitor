@@ -136,7 +136,214 @@ function detectCandlestickPatterns(points: PricePoint[]): PatternSignal[] {
     }))
   }
 
+  const segmentedCandles = buildSegmentCandles(points)
+  if (segmentedCandles.length >= 3) {
+    patterns.push(...detectThreeCandlePatterns(segmentedCandles, recentLow, recentHigh))
+  }
+
+  patterns.push(...detectHaramiPatterns(segmentedCandles, rangePosition))
+
   return patterns
+}
+
+function detectThreeCandlePatterns(
+  candles: MicroCandle[],
+  recentLow: number,
+  recentHigh: number,
+): PatternSignal[] {
+  const [first, second, third] = candles.slice(-3)
+  const firstRange = candleRange(first)
+  const secondRange = candleRange(second)
+  const thirdRange = candleRange(third)
+  const firstBody = candleBody(first)
+  const secondBody = candleBody(second)
+  const thirdBody = candleBody(third)
+  const recentRange = Math.max(recentHigh - recentLow, third.close * 0.0001)
+  const rangePosition = (third.close - recentLow) / recentRange
+  const patternLowPosition = (Math.min(first.low, second.low, third.low) - recentLow) / recentRange
+  const patternHighPosition = (Math.max(first.high, second.high, third.high) - recentLow) / recentRange
+  const patterns: PatternSignal[] = []
+
+  const firstBearish = isBearish(first)
+  const firstBullish = isBullish(first)
+  const thirdBullish = isBullish(third)
+  const thirdBearish = isBearish(third)
+  const firstMidpoint = (first.open + first.close) / 2
+  const lowLocation = patternLowPosition <= 0.35
+  const highLocation = patternHighPosition >= 0.65
+
+  if (
+    firstBearish &&
+    thirdBullish &&
+    firstBody >= firstRange * 0.45 &&
+    secondBody <= secondRange * 0.38 &&
+    thirdBody >= thirdRange * 0.35 &&
+    third.close >= firstMidpoint &&
+    lowLocation
+  ) {
+    const low = Math.min(first.low, second.low, third.low)
+    patterns.push(buildCandleSignal({
+      candle: third,
+      kind: 'morning_star',
+      label: '晨星确认',
+      direction: 'bullish',
+      confidence: clamp(70 + (0.48 - rangePosition) * 18 + thirdBody / thirdRange * 10, 56, 86),
+      confirmationStatus: 'confirmed',
+      confirmationPrice: third.close,
+      invalidationPrice: low * 0.998,
+      targetPrice: third.close + Math.max(third.close - low, third.close * 0.004),
+      expectedConfirmationBars: 1,
+      stateReason: '三根结构完整，第三根阳线收复第一根实体中点，且位置处于近期偏低区。',
+      contextTags: ['low_location', 'three_candle_reversal', 'needs_risk_reward_gate'],
+      summary: '晨星三根结构已完成，低位修复条件成立；仍必须通过赔率、事件和数据源门槛。',
+      explanation: '晨星代表下跌末端出现卖压衰减和买盘回补；若跌破三根结构低点，形态按失败处理。',
+    }))
+  }
+
+  if (
+    firstBullish &&
+    thirdBearish &&
+    firstBody >= firstRange * 0.45 &&
+    secondBody <= secondRange * 0.38 &&
+    thirdBody >= thirdRange * 0.35 &&
+    third.close <= firstMidpoint &&
+    highLocation
+  ) {
+    const high = Math.max(first.high, second.high, third.high)
+    patterns.push(buildCandleSignal({
+      candle: third,
+      kind: 'evening_star',
+      label: '黄昏星确认',
+      direction: 'bearish',
+      confidence: clamp(68 + (rangePosition - 0.52) * 18 + thirdBody / thirdRange * 10, 54, 84),
+      confirmationStatus: 'confirmed',
+      confirmationPrice: third.close,
+      invalidationPrice: high * 1.002,
+      targetPrice: third.close - Math.max(high - third.close, third.close * 0.004),
+      expectedConfirmationBars: 1,
+      stateReason: '三根结构完整，第三根阴线跌回第一根实体中点下方，且位置处于近期偏高区。',
+      contextTags: ['high_location', 'three_candle_reversal', 'chase_long_block'],
+      summary: '黄昏星三根结构已完成，高位滞涨风险增强；追多质量下降。',
+      explanation: '黄昏星代表上涨末端买盘衰减和抛压回归；若重新突破三根结构高点，风险形态失效。',
+    }))
+  }
+
+  if (isThreeWhiteSoldiers(first, second, third)) {
+    const highPosition = rangePosition >= 0.68
+    const low = Math.min(first.low, second.low, third.low)
+    const high = Math.max(first.high, second.high, third.high)
+    patterns.push(buildCandleSignal({
+      candle: third,
+      kind: 'three_white_soldiers',
+      label: highPosition ? '高位红三兵衰竭风险' : '红三兵修复候选',
+      direction: highPosition ? 'bearish' : 'bullish',
+      confidence: clamp(highPosition ? 64 + (rangePosition - 0.68) * 28 : 56 + (0.55 - Math.min(rangePosition, 0.55)) * 14, 48, 78),
+      confirmationStatus: 'candidate',
+      confirmationPrice: highPosition ? null : high,
+      invalidationPrice: highPosition ? high * 1.002 : low * 0.998,
+      targetPrice: highPosition ? third.close - Math.max(high - low, third.close * 0.004) : third.close + Math.max(high - low, third.close * 0.004),
+      expectedConfirmationBars: 2,
+      stateReason: highPosition
+        ? '连续三根阳线出现在近期高位，更像加速冲刺后的衰竭风险，禁止追涨式强提醒。'
+        : '连续三根阳线说明修复启动，但仍需确认回踩不破和赔率充足。',
+      contextTags: highPosition
+        ? ['high_location', 'blowoff_risk', 'chase_long_block']
+        : ['low_repair', 'needs_pullback_confirmation'],
+      summary: highPosition
+        ? '高位连续阳线属于冲刺衰竭风险，不能解释成低风险追涨机会。'
+        : '红三兵显示短线修复，但需要回踩确认后才可进入交易计划审核。',
+      explanation: '红三兵在低位止跌后有修复意义；在高位加速后常见获利盘和追涨盘拥挤，必须降级处理。',
+    }))
+  }
+
+  if (isThreeBlackCrows(first, second, third)) {
+    const lowPosition = rangePosition <= 0.32
+    const low = Math.min(first.low, second.low, third.low)
+    const high = Math.max(first.high, second.high, third.high)
+    patterns.push(buildCandleSignal({
+      candle: third,
+      kind: 'three_black_crows',
+      label: lowPosition ? '低位三鸦恐慌衰竭' : '三鸦风险候选',
+      direction: lowPosition ? 'neutral' : 'bearish',
+      confidence: clamp(lowPosition ? 58 + (0.32 - rangePosition) * 24 : 62 + (rangePosition - 0.45) * 16, 46, 78),
+      confirmationStatus: 'candidate',
+      confirmationPrice: lowPosition ? high : low,
+      invalidationPrice: high * 1.002,
+      targetPrice: lowPosition ? null : third.close - Math.max(high - low, third.close * 0.004),
+      expectedConfirmationBars: 2,
+      stateReason: lowPosition
+        ? '连续三根阴线已经打到近期低位，专业处理是等待修复或二次确认，不追空。'
+        : '连续三根阴线说明抛压占优，但仍需结合位置和事件确认。',
+      contextTags: lowPosition
+        ? ['low_location', 'panic_exhaustion', 'short_chase_block']
+        : ['sell_pressure', 'needs_follow_through'],
+      summary: lowPosition
+        ? '低位三鸦更像恐慌释放后的等待区，不作为追空或强风险放大依据。'
+        : '三鸦显示短线抛压增强，若处于高位/反弹末端需降低买点权重。',
+      explanation: '三鸦在顶部代表风险，在低位急跌后则可能是恐慌尾段；低位不得追空，只能等待修复确认。',
+    }))
+  }
+
+  return patterns
+}
+
+function detectHaramiPatterns(candles: MicroCandle[], rangePosition: number): PatternSignal[] {
+  if (candles.length < 2) {
+    return []
+  }
+  const previous = candles[candles.length - 2]
+  const latest = candles[candles.length - 1]
+  const previousBody = candleBody(previous)
+  const latestBody = candleBody(latest)
+  const previousRange = candleRange(previous)
+  const previousTop = Math.max(previous.open, previous.close)
+  const previousBottom = Math.min(previous.open, previous.close)
+  const latestTop = Math.max(latest.open, latest.close)
+  const latestBottom = Math.min(latest.open, latest.close)
+  const insideMotherBody = latestTop <= previous.high && latestBottom >= previous.low
+  if (!insideMotherBody || previousBody < previousRange * 0.42 || latestBody > previousBody * 0.55) {
+    return []
+  }
+
+  if (isBearish(previous) && rangePosition <= 0.55) {
+    return [buildCandleSignal({
+      candle: latest,
+      kind: 'bullish_harami',
+      label: '看涨孕线候选',
+      direction: 'neutral',
+      confidence: clamp(50 + (0.55 - rangePosition) * 18, 44, 62),
+      confirmationStatus: 'candidate',
+      confirmationPrice: previousTop,
+      invalidationPrice: previousBottom * 0.998,
+      targetPrice: null,
+      expectedConfirmationBars: 2,
+      stateReason: '小实体被前一根大阴线包住，只说明波动收缩；突破母线高点前不加买点强分。',
+      contextTags: ['compression', 'needs_mother_break', 'candidate_only'],
+      summary: '孕线代表动能收缩，不是买点；必须等待突破母线高点并回踩不破。',
+      explanation: '孕线只说明多空从单边转入犹豫，方向要由母线高低点突破决定。',
+    })]
+  }
+
+  if (isBullish(previous) && rangePosition >= 0.45) {
+    return [buildCandleSignal({
+      candle: latest,
+      kind: 'bearish_harami',
+      label: '看跌孕线候选',
+      direction: 'neutral',
+      confidence: clamp(50 + (rangePosition - 0.45) * 18, 44, 62),
+      confirmationStatus: 'candidate',
+      confirmationPrice: previousBottom,
+      invalidationPrice: previousTop * 1.002,
+      targetPrice: null,
+      expectedConfirmationBars: 2,
+      stateReason: '小实体被前一根大阳线包住，只说明高位波动收缩；跌破母线低点前不确认风险。',
+      contextTags: ['compression', 'needs_mother_break', 'candidate_only'],
+      summary: '孕线代表动能收缩，不是独立卖点；必须等待跌破母线低点确认。',
+      explanation: '孕线只说明多空从单边转入犹豫，方向要由母线高低点突破决定。',
+    })]
+  }
+
+  return []
 }
 
 function buildMicroCandles(points: PricePoint[]) {
@@ -156,36 +363,113 @@ function buildMicroCandles(points: PricePoint[]) {
   return candles
 }
 
+function buildSegmentCandles(points: PricePoint[]) {
+  const candles: MicroCandle[] = []
+  const window = points.slice(-9)
+  const offset = window.length % 3
+  for (let index = offset; index <= window.length - 3; index += 3) {
+    const slice = window.slice(index, index + 3)
+    const open = slice[0]
+    const current = slice[slice.length - 1]
+    candles.push({
+      timestamp: current.timestamp,
+      open: open.price,
+      high: Math.max(...slice.map((point) => point.price)),
+      low: Math.min(...slice.map((point) => point.price)),
+      close: current.price,
+    })
+  }
+  return candles
+}
+
 function buildCandleSignal(input: {
   candle: MicroCandle
   kind: PatternSignal['kind']
   label: string
   direction: PatternSignal['direction']
   confidence: number
+  confirmationStatus?: PatternSignal['confirmationStatus']
+  confirmationPrice?: number | null
   invalidationPrice: number | null
   targetPrice: number | null
+  expectedConfirmationBars?: number
+  stateReason?: string
+  contextTags?: string[]
   summary: string
   explanation: string
 }): PatternSignal {
+  const confirmationStatus = input.confirmationStatus ?? 'candidate'
   return {
     id: `pattern-${input.kind}-${input.candle.timestamp}`,
     kind: input.kind,
     label: input.label,
     direction: input.direction,
     confidence: Math.round(input.confidence * 0.86),
-    confirmationStatus: 'candidate',
-    confirmationReason: input.kind === 'doji'
+    confirmationStatus,
+    confirmationReason: confirmationStatus === 'confirmed'
+      ? '该三根结构已完成形态确认，但仍需通过位置、赔率、事件和数据源门槛。'
+      : input.kind === 'doji'
       ? '十字星只代表多空犹豫，需要下一根 K 线确认方向。'
       : '该形态由分时价格代理 K 线生成，缺少真实成交量/OHLC 交叉确认，默认只作为候选。',
+    confirmationPrice: input.confirmationPrice ?? null,
+    stateReason: input.stateReason,
+    cooldownBars: confirmationStatus === 'failed' ? 6 : 0,
+    contextTags: input.contextTags ?? ['micro_proxy'],
     detectedAt: input.candle.timestamp,
     keyPrice: input.candle.close,
     necklinePrice: null,
     invalidationPrice: input.invalidationPrice,
     targetPrice: input.targetPrice,
-    expectedConfirmationBars: 2,
+    expectedConfirmationBars: input.expectedConfirmationBars ?? 2,
     summary: input.summary,
     explanation: input.explanation,
   }
+}
+
+function candleBody(candle: MicroCandle) {
+  return Math.abs(candle.close - candle.open)
+}
+
+function candleRange(candle: MicroCandle) {
+  return Math.max(candle.high - candle.low, candle.close * 0.0001)
+}
+
+function upperShadow(candle: MicroCandle) {
+  return candle.high - Math.max(candle.open, candle.close)
+}
+
+function lowerShadow(candle: MicroCandle) {
+  return Math.min(candle.open, candle.close) - candle.low
+}
+
+function isBullish(candle: MicroCandle) {
+  return candle.close > candle.open
+}
+
+function isBearish(candle: MicroCandle) {
+  return candle.close < candle.open
+}
+
+function isThreeWhiteSoldiers(first: MicroCandle, second: MicroCandle, third: MicroCandle) {
+  return [first, second, third].every((candle) => {
+    const range = candleRange(candle)
+    return isBullish(candle) &&
+      candleBody(candle) >= range * 0.42 &&
+      upperShadow(candle) <= range * 0.45
+  }) &&
+    second.close > first.close &&
+    third.close > second.close
+}
+
+function isThreeBlackCrows(first: MicroCandle, second: MicroCandle, third: MicroCandle) {
+  return [first, second, third].every((candle) => {
+    const range = candleRange(candle)
+    return isBearish(candle) &&
+      candleBody(candle) >= range * 0.42 &&
+      lowerShadow(candle) <= range * 0.45
+  }) &&
+    second.close < first.close &&
+    third.close < second.close
 }
 
 function buildPricePoints(history: HistoryPoint[], latestQuote: QuoteSample) {
@@ -249,8 +533,10 @@ function detectDoubleBottom(points: PricePoint[], swings: SwingPoint[]): Pattern
       const rebound = (latest.price - right.price) / right.price
       const necklineDistance = (neckline - latest.price) / latest.price
       const confirmed = latest.price >= neckline
+      const invalidationPrice = Math.min(left.price, right.price) * 0.998
+      const failed = latest.price <= invalidationPrice
       const confidence = clamp(
-        45 + (0.006 - similarity) * 5000 + Math.min(rebound * 2800, 18) - Math.max(necklineDistance, 0) * 700 + (confirmed ? 8 : -8),
+        45 + (0.006 - similarity) * 5000 + Math.min(rebound * 2800, 18) - Math.max(necklineDistance, 0) * 700 + (confirmed ? 8 : failed ? 2 : -8),
         38,
         confirmed ? 82 : 64,
       )
@@ -258,20 +544,36 @@ function detectDoubleBottom(points: PricePoint[], swings: SwingPoint[]): Pattern
       return {
         id: `pattern-double-bottom-${right.timestamp}`,
         kind: 'double_bottom',
-        label: confirmed ? '双底确认' : '疑似双底',
-        direction: 'bullish',
+        label: failed ? '双底失败冷却' : confirmed ? '双底确认' : '疑似双底',
+        direction: failed ? 'neutral' : 'bullish',
         confidence: Math.round(confidence),
-        confirmationStatus: confirmed ? 'confirmed' : 'candidate',
-        confirmationReason: confirmed
+        confirmationStatus: failed ? 'failed' : confirmed ? 'confirmed' : 'candidate',
+        confirmationReason: failed
+          ? '价格跌破双底右底/左底防线，形态失败，进入 6 根 K 线冷却。'
+          : confirmed
           ? '最新价格已站上双底颈线，形态进入确认观察。'
           : '右底反弹尚未站上颈线，只能作为候选形态等待确认。',
+        confirmationPrice: neckline,
+        stateReason: failed
+          ? '双底候选跌破失效价，冷却期内同类形态不能触发强观察。'
+          : confirmed
+            ? '颈线已被收复，但仍需交易计划和赔率审核。'
+            : '结构仅完成右底反弹，缺少颈线确认。',
+        cooldownBars: failed ? 6 : 0,
+        contextTags: failed
+          ? ['pattern_failed', 'cooldown', 'double_bottom']
+          : confirmed
+            ? ['confirmed_reversal', 'neckline_reclaimed', 'double_bottom']
+            : ['candidate_only', 'needs_neckline_break', 'double_bottom'],
         detectedAt: latest.timestamp,
         keyPrice: right.price,
         necklinePrice: neckline,
-        invalidationPrice: Math.min(left.price, right.price) * 0.998,
+        invalidationPrice,
         targetPrice: neckline + Math.max(neckline - Math.min(left.price, right.price), 0),
         expectedConfirmationBars: latest.price >= neckline ? 1 : 3,
-        summary: latest.price >= neckline
+        summary: failed
+          ? '双底候选已跌破失效价，短线不再按买点处理，等待新的结构重建。'
+          : latest.price >= neckline
           ? '双底颈线已接近确认，短线反弹结构增强。'
           : '右底不破左底且出现反弹，等待放量站上颈线确认。',
         explanation: '双底通常代表下跌后两次探底未破，说明低位承接增强；若后续跌破右底，形态失效。',
@@ -300,8 +602,10 @@ function detectDoubleTop(points: PricePoint[], swings: SwingPoint[]): PatternSig
       const rejection = (right.price - latest.price) / right.price
       const necklineDistance = (latest.price - neckline) / latest.price
       const confirmed = latest.price <= neckline
+      const invalidationPrice = Math.max(left.price, right.price) * 1.002
+      const failed = latest.price >= invalidationPrice
       const confidence = clamp(
-        44 + (0.006 - similarity) * 4800 + Math.min(rejection * 2600, 20) - Math.max(necklineDistance, 0) * 450 + (confirmed ? 8 : -6),
+        44 + (0.006 - similarity) * 4800 + Math.min(rejection * 2600, 20) - Math.max(necklineDistance, 0) * 450 + (confirmed ? 8 : failed ? 2 : -6),
         36,
         confirmed ? 80 : 64,
       )
@@ -309,17 +613,31 @@ function detectDoubleTop(points: PricePoint[], swings: SwingPoint[]): PatternSig
       return {
         id: `pattern-double-top-${right.timestamp}`,
         kind: 'double_top',
-        label: confirmed ? '双顶确认' : '疑似双顶',
-        direction: 'bearish',
+        label: failed ? '双顶失败冷却' : confirmed ? '双顶确认' : '疑似双顶',
+        direction: failed ? 'neutral' : 'bearish',
         confidence: Math.round(confidence),
-        confirmationStatus: confirmed ? 'confirmed' : 'candidate',
-        confirmationReason: confirmed
+        confirmationStatus: failed ? 'failed' : confirmed ? 'confirmed' : 'candidate',
+        confirmationReason: failed
+          ? '价格突破双顶前高防线，风险形态失败，进入 6 根 K 线冷却。'
+          : confirmed
           ? '最新价格已跌破双顶颈线，风险形态进入确认。'
           : '两次冲高受阻但尚未跌破颈线，只能作为候选风险观察。',
+        confirmationPrice: neckline,
+        stateReason: failed
+          ? '双顶候选突破失效价，冷却期内同类风险形态不能反复提示。'
+          : confirmed
+            ? '颈线已跌破，但仍需结合位置、事件和赔率处理。'
+            : '结构仅完成二次冲高，缺少颈线确认。',
+        cooldownBars: failed ? 6 : 0,
+        contextTags: failed
+          ? ['pattern_failed', 'cooldown', 'double_top']
+          : confirmed
+            ? ['confirmed_reversal', 'neckline_lost', 'double_top']
+            : ['candidate_only', 'needs_neckline_break', 'double_top'],
         detectedAt: latest.timestamp,
         keyPrice: right.price,
         necklinePrice: neckline,
-        invalidationPrice: Math.max(left.price, right.price) * 1.002,
+        invalidationPrice,
         targetPrice: neckline - Math.max(Math.max(left.price, right.price) - neckline, 0),
         expectedConfirmationBars: latest.price <= neckline ? 1 : 3,
         summary: latest.price <= neckline

@@ -68,11 +68,11 @@ export function extractProbabilityFeatures(input: {
     .slice(0, 3)
     .reduce((sum, pattern) => sum + pattern.confidence / 100, 0)
   const candidateBullishPatternScore = patternSignals
-    .filter((pattern) => pattern.direction === 'bullish' && !isConfirmedPatternSignal(pattern))
+    .filter((pattern) => pattern.direction === 'bullish' && pattern.confirmationStatus !== 'failed' && !isConfirmedPatternSignal(pattern))
     .slice(0, 3)
     .reduce((sum, pattern) => sum + pattern.confidence / 100, 0)
   const bearishPatternScore = patternSignals
-    .filter((pattern) => pattern.direction === 'bearish')
+    .filter((pattern) => pattern.direction === 'bearish' && pattern.confirmationStatus !== 'failed')
     .slice(0, 3)
     .reduce((sum, pattern) => sum + pattern.confidence / 100, 0)
   const knowledgeFeatures = buildKnowledgeFeatureValues({
@@ -413,9 +413,9 @@ function snapshotRuleProbability(snapshot: BacktestSnapshot) {
     : snapshot.macroRegime === 'pressure'
       ? -0.16
       : 0
-  const patternPart = snapshot.primaryPatternKind === 'double_bottom' || snapshot.primaryPatternKind === 'support_rebound' || snapshot.primaryPatternKind === 'hammer' || snapshot.primaryPatternKind === 'bullish_engulfing'
+  const patternPart = snapshot.primaryPatternKind === 'double_bottom' || snapshot.primaryPatternKind === 'support_rebound' || snapshot.primaryPatternKind === 'hammer' || snapshot.primaryPatternKind === 'bullish_engulfing' || snapshot.primaryPatternKind === 'morning_star' || snapshot.primaryPatternKind === 'three_white_soldiers'
     ? 0.12
-    : snapshot.primaryPatternKind === 'double_top' || snapshot.primaryPatternKind === 'resistance_rejection' || snapshot.primaryPatternKind === 'shooting_star' || snapshot.primaryPatternKind === 'bearish_engulfing'
+    : snapshot.primaryPatternKind === 'double_top' || snapshot.primaryPatternKind === 'resistance_rejection' || snapshot.primaryPatternKind === 'shooting_star' || snapshot.primaryPatternKind === 'bearish_engulfing' || snapshot.primaryPatternKind === 'evening_star' || snapshot.primaryPatternKind === 'three_black_crows'
       ? -0.14
       : 0
   return sigmoid(scoreLogitPart + valuationPart + confluencePart + macroPart + patternPart)

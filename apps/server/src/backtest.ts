@@ -22,6 +22,8 @@ import type {
   SourceStatus,
 } from './types.js'
 
+const MIN_WEIGHTED_SAMPLES = 30
+
 export type StrategyReplayPoint = {
   quote: QuoteSample
   signal: OpportunitySignal
@@ -42,13 +44,13 @@ export function buildExternalModelBacktestGate(
   ).map((bucket) => bucket.key)
   const matched = monitor.buckets.filter((bucket) => currentKeys.includes(bucket.key))
   const strong = matched.filter((bucket) => {
-    return bucket.qualifiedSamples >= 20 &&
+    return bucket.qualifiedSamples >= MIN_WEIGHTED_SAMPLES &&
       bucket.reliability >= 55 &&
       (bucket.excessWinRate ?? 0) >= 0 &&
       (bucket.profitFactor ?? 0) >= 1.05
   })
   const weak = matched.filter((bucket) => {
-    return bucket.qualifiedSamples >= 10 &&
+    return bucket.qualifiedSamples >= MIN_WEIGHTED_SAMPLES &&
       (
         bucket.reliability < 45 ||
         (bucket.excessWinRate !== null && bucket.excessWinRate < 0) ||
@@ -77,7 +79,7 @@ export function buildExternalModelBacktestGate(
       summary: `命中外部模型强桶「${strong[0].label}」且模型/本地共振，允许低权重加分。`,
     }
   }
-  if (matched.some((bucket) => bucket.qualifiedSamples >= 10)) {
+  if (matched.some((bucket) => bucket.qualifiedSamples >= MIN_WEIGHTED_SAMPLES)) {
     return {
       status: 'neutral',
       weightMultiplier: 0.35,
@@ -152,6 +154,7 @@ export function buildBacktestMonitor(
       stopLossPrice: barrierLabel.stopLossPrice,
       barsObserved: barrierLabel.barsObserved,
       complete: barrierLabel.complete,
+      failureReason: classifyFailureReason(current, barrierLabel),
     })
   }
 
@@ -185,6 +188,10 @@ export function buildBacktestMonitor(
     .filter((sample) => sample.returnPercent < 0 || sample.maxDrawdown <= -0.01)
     .sort((left, right) => left.returnPercent - right.returnPercent)
     .slice(0, 8)
+  const incompleteSampleRate = allEvaluatedSamples.length > 0
+    ? allEvaluatedSamples.filter((sample) => sample.complete === false).length / allEvaluatedSamples.length
+    : null
+  const failureAttribution = buildFailureAttribution(evaluatedSamples)
   const buckets = buildBacktestBuckets(sorted, horizonMinutes, signalThreshold)
   const probabilityMetrics = buildProbabilityMetricsFromSnapshots(sorted)
   const externalModel = buildExternalModelBacktestMonitor(sorted, horizonMinutes)
@@ -213,6 +220,8 @@ export function buildBacktestMonitor(
     },
     externalModel,
     failureSamples,
+    incompleteSampleRate,
+    failureAttribution,
     summary: buildMonitorSummary({
       allEvaluatedSamples: allEvaluatedSamples.length,
       evaluatedSamples: evaluatedSamples.length,
@@ -226,6 +235,87 @@ export function buildBacktestMonitor(
   }
 }
 
+function classifyFailureReason(
+  snapshot: BacktestSnapshot,
+  label: ReturnType<typeof buildTripleBarrierLabel>,
+) {
+  if (!label.complete) {
+    return 'sampling_incomplete'
+  }
+  if (label.outcome === 'stop_loss_hit') {
+    return 'stop_loss_first'
+  }
+  if (snapshot.eventRiskLevel === 'critical' || snapshot.eventRiskLevel === 'elevated') {
+    return 'event_noise'
+  }
+  if (snapshot.primaryPatternKind && snapshot.signalLevel !== 'none' && snapshot.signalScore < 55) {
+    return 'pattern_unconfirmed'
+  }
+  if (snapshot.macroRegime === 'pressure') {
+    return 'macro_pressure'
+  }
+  if (snapshot.confluenceConflictLevel === 'severe') {
+    return 'timeframe_conflict'
+  }
+  if (snapshot.sourceHealth === 'stale' || snapshot.sourceHealth === 'down') {
+    return 'source_health'
+  }
+  if (label.outcome === 'timeout' || label.outcome === 'no_touch') {
+    return 'timeout_or_no_touch'
+  }
+  if (label.maxDrawdown <= -0.01) {
+    return 'adverse_excursion'
+  }
+  return null
+}
+
+function buildFailureAttribution(samples: WalkForwardSample[]) {
+  const failures = samples.filter((sample) => {
+    return sample.returnPercent < 0 || sample.maxDrawdown <= -0.01 || sample.barrierOutcome === 'stop_loss_hit' || sample.complete === false
+  })
+  if (failures.length < 1) {
+    return []
+  }
+  const counts = new Map<string, number>()
+  for (const sample of failures) {
+    const reason = sample.failureReason ?? 'uncategorized'
+    counts.set(reason, (counts.get(reason) ?? 0) + 1)
+  }
+  return [...counts.entries()]
+    .map(([reason, count]) => ({
+      reason,
+      label: failureReasonLabel(reason),
+      count,
+      ratio: count / failures.length,
+    }))
+    .sort((left, right) => right.count - left.count)
+}
+
+function failureReasonLabel(reason: string) {
+  switch (reason) {
+    case 'sampling_incomplete':
+      return '采样不完整'
+    case 'stop_loss_first':
+      return '止损先达'
+    case 'event_noise':
+      return '事件噪声'
+    case 'pattern_unconfirmed':
+      return '形态未确认'
+    case 'macro_pressure':
+      return '宏观反向'
+    case 'timeframe_conflict':
+      return '周期冲突'
+    case 'source_health':
+      return '数据源异常'
+    case 'timeout_or_no_touch':
+      return '超时/未触发'
+    case 'adverse_excursion':
+      return '最大不利波动'
+    default:
+      return '未分类失败'
+  }
+}
+
 function buildExternalModelBacktestMonitor(
   snapshots: BacktestSnapshot[],
   defaultHorizonMinutes: number,
@@ -235,11 +325,11 @@ function buildExternalModelBacktestMonitor(
   const liveSnapshots = liveOriginSnapshots.filter((snapshot) => snapshot.externalModelStatus === 'live')
   const liveCoverage = liveOriginSnapshots.length > 0 ? liveSnapshots.length / liveOriginSnapshots.length : null
   const bestBuckets = buckets
-    .filter((bucket) => bucket.qualifiedSamples >= 3 && bucket.reliability >= 55 && (bucket.excessWinRate ?? 0) >= 0)
+    .filter((bucket) => bucket.qualifiedSamples >= MIN_WEIGHTED_SAMPLES && bucket.reliability >= 55 && (bucket.excessWinRate ?? 0) >= 0)
     .sort((left, right) => right.reliability - left.reliability)
     .slice(0, 4)
   const weakBuckets = buckets
-    .filter((bucket) => bucket.qualifiedSamples >= 3 && (
+    .filter((bucket) => bucket.qualifiedSamples >= MIN_WEIGHTED_SAMPLES && (
       bucket.reliability < 45 ||
       (bucket.excessWinRate !== null && bucket.excessWinRate < 0) ||
       (bucket.profitFactor !== null && bucket.profitFactor < 1.05)
@@ -863,6 +953,7 @@ function buildBacktestBuckets(
       stopLossPrice: barrierLabel.stopLossPrice,
       barsObserved: barrierLabel.barsObserved,
       complete: barrierLabel.complete,
+      failureReason: classifyFailureReason(current, barrierLabel),
       baseline: current.signalScore < signalThreshold && current.signalLevel === 'none',
     }
 
@@ -938,8 +1029,10 @@ function summarizeBucket(
 ): BacktestBucket {
   const [dimension] = key.split(':') as [BacktestBucket['dimension'], string]
   const qualified = samples.filter((sample) => !sample.baseline)
-  const returns = qualified.map((sample) => sample.returnPercent)
-  const baselineReturns = samples.map((sample) => sample.returnPercent)
+  const completeQualified = qualified.filter((sample) => sample.complete !== false)
+  const completeSamples = samples.filter((sample) => sample.complete !== false)
+  const returns = completeQualified.map((sample) => sample.returnPercent)
+  const baselineReturns = completeSamples.map((sample) => sample.returnPercent)
   const winRate = returns.length > 0 ? returns.filter((value) => value > 0).length / returns.length : null
   const baselineWinRate = baselineReturns.length > 0
     ? baselineReturns.filter((value) => value > 0).length / baselineReturns.length
@@ -955,7 +1048,10 @@ function summarizeBucket(
   const stopLossHitRate = outcomeRate(qualified, 'stop_loss_hit')
   const noTouchRate = outcomeRate(qualified, 'no_touch')
   const timeoutRate = outcomeRate(qualified, 'timeout')
-  const reliability = calculateReliability(qualified.length, winRate, profitFactor)
+  const incompleteRate = samples.length > 0
+    ? samples.filter((sample) => sample.complete === false).length / samples.length
+    : null
+  const reliability = calculateReliability(completeQualified.length, winRate, profitFactor)
   const label = bucketLabelFromKey(key)
   return {
     key,
@@ -974,8 +1070,9 @@ function summarizeBucket(
     stopLossHitRate,
     noTouchRate,
     timeoutRate,
+    incompleteRate,
     reliability,
-    summary: `${label}：合格 ${qualified.length}/${samples.length}，TP1 ${formatPercent(tp1HitRate)}，止损 ${formatPercent(stopLossHitRate)}，超时 ${formatPercent(timeoutRate)}，PF ${formatRatio(profitFactor)}，MAE ${formatPercent(mae)}，MFE ${formatPercent(mfe)}。`,
+    summary: `${label}：合格 ${qualified.length}/${samples.length}，完整样本 ${completeQualified.length}，TP1 ${formatPercent(tp1HitRate)}，止损 ${formatPercent(stopLossHitRate)}，未完成 ${formatPercent(incompleteRate)}，PF ${formatRatio(profitFactor)}，MAE ${formatPercent(mae)}，MFE ${formatPercent(mfe)}。`,
   }
 }
 
@@ -1259,7 +1356,8 @@ function calculateReliability(
   const sampleScore = Math.min(34, evaluatedSamples * 4)
   const winScore = Math.max(0, (winRate - 0.45) * 90)
   const profitScore = profitFactor === null ? 0 : Math.min(18, Math.max(0, (profitFactor - 1) * 18))
-  return Math.round(Math.min(88, 28 + sampleScore + winScore + profitScore))
+  const raw = Math.round(Math.min(88, 28 + sampleScore + winScore + profitScore))
+  return evaluatedSamples < MIN_WEIGHTED_SAMPLES ? Math.min(raw, 49) : raw
 }
 
 function buildMonitorSummary(input: {

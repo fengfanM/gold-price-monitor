@@ -83,8 +83,30 @@ describe('selective backtest monitor', () => {
     assert.equal(probabilityBucket?.excessWinRate !== null, true)
   })
 
-  it('uses external model bucket history to block weak buckets and allow strong agreement buckets', () => {
-    const strongSnapshots = Array.from({ length: 22 }, (_, index) => {
+  it('uses external model bucket history to block weak buckets and allow strong agreement buckets only after 30 samples', () => {
+    const underSampledSnapshots = Array.from({ length: 22 }, (_, index) => {
+      return makeSnapshot(
+        new Date(Date.UTC(2026, 4, 16, 8, index)).toISOString(),
+        100 + index,
+        66,
+        'watch',
+        'double_bottom',
+        'supportive',
+        {
+          externalModelUpProbability: 0.66,
+          externalModelConfidence: 82,
+          modelProbability: 0.62,
+          externalModelStatus: 'live',
+          externalModelProvider: 'chronos',
+        },
+      )
+    })
+    const underSampledGate = buildExternalModelBacktestGate(underSampledSnapshots, underSampledSnapshots[underSampledSnapshots.length - 2], 1)
+
+    assert.equal(underSampledGate.status, 'insufficient')
+    assert.equal(underSampledGate.weightMultiplier, 0)
+
+    const strongSnapshots = Array.from({ length: 34 }, (_, index) => {
       return makeSnapshot(
         new Date(Date.UTC(2026, 4, 16, 9, index)).toISOString(),
         100 + index,
@@ -106,7 +128,7 @@ describe('selective backtest monitor', () => {
     assert.equal(strongGate.status, 'strong')
     assert.equal(strongGate.weightMultiplier, 1)
 
-    const weakSnapshots = Array.from({ length: 14 }, (_, index) => {
+    const weakSnapshots = Array.from({ length: 34 }, (_, index) => {
       return makeSnapshot(
         new Date(Date.UTC(2026, 4, 16, 10, index)).toISOString(),
         100 - index,
@@ -167,6 +189,8 @@ describe('selective backtest monitor', () => {
     const monitor = buildBacktestMonitor(snapshots, 60)
 
     assert.equal(monitor.allEvaluatedSamples, 2)
+    assert.equal(monitor.incompleteSampleRate !== null && monitor.incompleteSampleRate > 0, true)
+    assert.equal(monitor.failureAttribution.some((item) => item.reason === 'sampling_incomplete'), true)
     assert.equal(monitor.failureSamples.length >= 0, true)
     assert.equal(monitor.buckets.some((bucket) => (bucket.timeoutRate ?? 0) > 0), true)
   })

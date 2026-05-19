@@ -1,6 +1,6 @@
 local_path,source,type,title,url,use_case,download_status,bytes
 txt/reminiscences-of-a-stock-operator-gutenberg-60979.txt,Project Gutenberg,public_domain_txt,Reminiscences of a Stock Operator,https://www.gutenberg.org/files/60979/60979-0.txt,公版交易心理、趋势、试仓与纪律,downloaded,600641
-txt/studies-in-tape-reading-gutenberg-68583.txt,Project Gutenberg,public_domain_txt,Studies in Tape Reading,https://www.gutenberg.org/files/68583/68583-0.txt,公版盘口、价格行为、短线读盘,downloaded,168456
+txt/studies-in-tape-reading-gutenberg-68583.txt,Project Gutenberg,public_domain_txt_disabled,Studies in Tape Reading,https://www.gutenberg.org/files/68583/68583-0.txt,资料污染：仅保留合规记录，不进入生产评分或知识库规则,disabled_reference,168456
 txt/successful-stock-speculation-gutenberg-26841.txt,Project Gutenberg,public_domain_txt,Successful Stock Speculation,https://www.gutenberg.org/files/26841/26841-0.txt,公版投机原则、风险与交易认知,failed:HTTP Error 404: Not Found,0
 pdf/wgc-gold-demand-trends-q1-2026-exec-summary.pdf,World Gold Council,official_pdf,Gold Demand Trends Q1 2026 Executive Summary,https://www.gold.org/download/file/20774/GDT-Q1-2026-Exec-Summary.pdf,黄金需求、ETF、央行购金,downloaded,150414
 pdf/wgc-gold-market-primer-cn-2023.pdf,World Gold Council China,official_pdf,黄金市场入门指南：市场规模与结构,https://china.gold.org/download/file/18222/%E9%BB%84%E9%87%91%E5%B8%82%E5%9C%BA%E5%85%A5%E9%97%A8%E6%8C%87%E5%8D%97.pdf,黄金市场结构、库存、交易中心,downloaded,6660903

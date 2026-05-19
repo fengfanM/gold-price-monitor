@@ -13,7 +13,7 @@ import type {
   ValuationMetrics,
 } from './types.js'
 
-export const KNOWLEDGE_RULE_PACK_VERSION = 'gold-kb-rule-pack-v1'
+export const KNOWLEDGE_RULE_PACK_VERSION = 'gold-kb-rule-pack-v2'
 
 export function buildKnowledgeRuleAudit(input: {
   history: HistoryPoint[]
@@ -30,6 +30,10 @@ export function buildKnowledgeRuleAudit(input: {
   const features = buildKnowledgeFeatureValues(input)
   const confirmedBullish = input.patternSignals.some((pattern) => pattern.direction === 'bullish' && isConfirmedPattern(pattern))
   const candidateBullish = input.patternSignals.some((pattern) => pattern.direction === 'bullish' && !isConfirmedPattern(pattern))
+  const failedPatterns = input.patternSignals.filter((pattern) => pattern.confirmationStatus === 'failed')
+  const exhaustionRisks = input.patternSignals.filter((pattern) =>
+    pattern.contextTags?.some((tag) => tag === 'blowoff_risk' || tag === 'chase_long_block'),
+  )
   const nearRangeMiddle = features.rangePosition !== null && features.rangePosition > 0.38 && features.rangePosition < 0.66
   const nearHigh = features.rangePosition !== null && features.rangePosition >= 0.72
   const eventBlocked = input.eventRisk.level === 'critical' || input.eventRisk.level === 'elevated'
@@ -55,21 +59,27 @@ export function buildKnowledgeRuleAudit(input: {
     buildCheck({
       id: 'kb:pattern-location',
       label: '知识库形态位置',
-      status: confirmedBullish && !nearHigh
+      status: failedPatterns.length > 0 || exhaustionRisks.length > 0
+        ? 'block'
+        : confirmedBullish && !nearHigh
         ? 'pass'
         : candidateBullish || nearRangeMiddle
           ? 'watch'
           : nearHigh
             ? 'block'
             : 'watch',
-      reason: confirmedBullish && !nearHigh
+      reason: failedPatterns.length > 0
+        ? `${failedPatterns[0].label}处于失败/冷却状态，知识库禁止同类强提醒。`
+        : exhaustionRisks.length > 0
+          ? `${exhaustionRisks[0].label}属于追涨衰竭风险，不能解释成买点。`
+          : confirmedBullish && !nearHigh
         ? '看多形态已确认且未处在日内高位追单区。'
         : nearHigh
           ? '价格处在日内高位区，知识库禁止把上涨末端当买点。'
           : candidateBullish
             ? '存在看多候选形态，但尚未完成关键位确认。'
             : '暂无清晰低位形态位置优势。',
-      impactScore: confirmedBullish && !nearHigh ? 3 : nearHigh ? -4 : 0,
+      impactScore: failedPatterns.length > 0 || exhaustionRisks.length > 0 ? -6 : confirmedBullish && !nearHigh ? 3 : nearHigh ? -4 : 0,
       theorySource: 'docs/GOLD_PRECIOUS_METALS_EXPERT_KNOWLEDGE_BASE.md#5-黄金技术分析体系',
     }),
     buildCheck({
@@ -125,6 +135,14 @@ export function buildKnowledgeRuleAudit(input: {
       theorySource: 'docs/GOLD_TRADING_THEORY_DIGEST.md#1-宏观经济与黄金大环境',
     }),
     buildCheck({
+      id: 'kb:macro-evidence-gate',
+      label: '知识库宏观资金流',
+      status: buildMacroEvidenceStatus(input.marketContext),
+      reason: buildMacroEvidenceReason(input.marketContext),
+      impactScore: buildMacroEvidenceImpact(input.marketContext),
+      theorySource: 'docs/GOLD_PRECIOUS_METALS_EXPERT_KNOWLEDGE_BASE.md#6-黄金宏观与资金流',
+    }),
+    buildCheck({
       id: 'kb:risk-reward-discipline',
       label: '知识库赔率纪律',
       status: !tradePlan
@@ -163,6 +181,8 @@ export function buildKnowledgeRuleAudit(input: {
     candidateBullish ? '候选看多形态未确认，必须等待颈线/触发价或回踩成功。' : null,
     nearRangeMiddle ? '价格处于区间中部，知识库不允许把中位震荡当强买点。' : null,
     nearHigh ? '高位追单风险触发，若继续上冲需等待回踩不破再评估。' : null,
+    failedPatterns.length > 0 ? `${failedPatterns[0].label}已失败，默认冷却 ${failedPatterns[0].cooldownBars ?? 6} 根当前周期 K 线。` : null,
+    exhaustionRisks.length > 0 ? `${exhaustionRisks[0].label}属于加速衰竭，不允许追涨放大。` : null,
     features.rangeCompressionScore !== null && features.rangeCompressionScore >= 0.7 ? '窄幅整理后更容易发生假突破，必须等待收回/回踩确认。' : null,
     features.maWhipsawRisk !== null && features.maWhipsawRisk >= 0.45 ? '均线反复穿越提示震荡噪音，短线信号需降权。' : null,
   ])
@@ -353,6 +373,55 @@ function buildMaWhipsawRisk(prices: number[], ma20: number | null) {
     }
   }
   return clamp(crosses / 5, 0, 1)
+}
+
+function buildMacroEvidenceStatus(marketContext: MarketContext): KnowledgeRuleCheck['status'] {
+  const factors = getMacroEvidenceFactors(marketContext)
+  const liveGroups = new Set(factors.filter((factor) => factor.status === 'live').map((factor) => macroEvidenceGroup(factor.id)))
+  const pressureGroups = new Set(factors.filter((factor) => factor.impact === 'pressure').map((factor) => macroEvidenceGroup(factor.id)))
+  if (pressureGroups.size >= 2) {
+    return 'block'
+  }
+  if (liveGroups.size < 2) {
+    return 'watch'
+  }
+  return 'pass'
+}
+
+function buildMacroEvidenceReason(marketContext: MarketContext) {
+  const factors = getMacroEvidenceFactors(marketContext)
+  const liveGroups = new Set(factors.filter((factor) => factor.status === 'live').map((factor) => macroEvidenceGroup(factor.id)))
+  const pressure = factors.filter((factor) => factor.impact === 'pressure')
+  if (pressure.length >= 2) {
+    return `COT/ETF/CME 等资金流中有 ${pressure.length} 项偏压制，强提醒降级。`
+  }
+  if (liveGroups.size < 2) {
+    return 'COT、ETF、CME OI/Volume 等宏观资金流新鲜度不足，只能中性或降权参考。'
+  }
+  return '资金流证据覆盖满足观察要求；央行购金只作为中长期背景，不放大日内追涨。'
+}
+
+function buildMacroEvidenceImpact(marketContext: MarketContext) {
+  const status = buildMacroEvidenceStatus(marketContext)
+  return status === 'block' ? -5 : status === 'watch' ? -2 : 1
+}
+
+function getMacroEvidenceFactors(marketContext: MarketContext) {
+  const ids = new Set(['COT_GOLD_NET', 'GLD_FLOW', 'WGC_ETF_FLOW', 'CME_GOLD_OI', 'CME_GOLD_VOLUME', 'WGC_CENTRAL_BANK'])
+  return (marketContext.macroFactors ?? []).filter((factor) => ids.has(factor.id))
+}
+
+function macroEvidenceGroup(id: string) {
+  if (id.includes('COT')) {
+    return 'cot'
+  }
+  if (id.includes('GLD') || id.includes('ETF')) {
+    return 'etf'
+  }
+  if (id.includes('CME')) {
+    return 'cme'
+  }
+  return 'structural'
 }
 
 function buildCheck(input: KnowledgeRuleCheck): KnowledgeRuleCheck {

@@ -9,7 +9,7 @@
 | 文件 | 来源 | 合规类型 | 学习用途 |
 | --- | --- | --- | --- |
 | `txt/reminiscences-of-a-stock-operator-gutenberg-60979.txt` | Project Gutenberg | Public domain TXT | 交易心理、趋势、试仓、坐住盈利、纪律 |
-| `txt/studies-in-tape-reading-gutenberg-68583.txt` | Project Gutenberg | Public domain TXT | 盘口阅读、价格行为、短线节奏、交易执行 |
+| `txt/studies-in-tape-reading-gutenberg-68583.txt` | Project Gutenberg | Public domain TXT；资料污染，生产禁用 | 仅保留合规来源记录；不进入模型、评分或知识库规则 |
 | `txt/successful-stock-speculation-gutenberg-26841.txt` | Project Gutenberg | Public domain TXT | 投机原则、趋势、风险、交易认知 |
 
 ## 2. 已下载 PDF 资料
@@ -61,6 +61,7 @@ python3 docs/reference/kline-gold-trading/library/download-retry-missing.py
 ## 6. 使用原则
 
 - 公版 TXT 可以全文学习、摘录和二次整理，但引用时仍保留来源。
+- `studies-in-tape-reading-gutenberg-68583.txt` 标记为资料污染：即使版权状态可用，也不代表适合黄金 K 线生产规则；本项目只允许它作为离线反例/资料状态样本，不进入评分、强提醒、模型训练或页面建议。
 - 官方 PDF 可作为研究参考和数据口径依据，不应擅自去除版权声明或再分发给第三方。
 - 公开教育 PDF 可用于学习和规则转译，不直接复制大段原文进产品。
 - 受版权保护的现代交易书籍只保存正版入口和读书摘要，不保存全文。

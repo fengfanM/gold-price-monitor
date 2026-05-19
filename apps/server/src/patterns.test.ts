@@ -46,6 +46,27 @@ describe('chart pattern detection', () => {
     assert.equal(doubleBottom?.label, '双底确认')
   })
 
+  it('marks an invalidated double bottom as failed with a cooldown window', () => {
+    const history = [
+      makeHistoryPoint('2026-05-16T09:49:00.000Z', 590),
+      makeHistoryPoint('2026-05-16T09:50:00.000Z', 582),
+      makeHistoryPoint('2026-05-16T09:51:00.000Z', 588),
+      makeHistoryPoint('2026-05-16T09:52:00.000Z', 586),
+      makeHistoryPoint('2026-05-16T09:53:00.000Z', 581.9),
+      makeHistoryPoint('2026-05-16T09:54:00.000Z', 585),
+      makeHistoryPoint('2026-05-16T09:55:00.000Z', 582.2),
+    ]
+
+    const signals = detectPatternSignals(history, makeQuote(580.5))
+    const failedDoubleBottom = signals.find((signal) => signal.kind === 'double_bottom')
+
+    assert.equal(Boolean(failedDoubleBottom), true)
+    assert.equal(failedDoubleBottom?.confirmationStatus, 'failed')
+    assert.equal(failedDoubleBottom?.cooldownBars, 6)
+    assert.equal(failedDoubleBottom?.contextTags?.includes('pattern_failed'), true)
+  })
+
+
   it('detects resistance rejection near repeated swing highs', () => {
     const history = [
       makeHistoryPoint('2026-05-16T09:50:00.000Z', 580),
@@ -120,6 +141,111 @@ describe('chart pattern detection', () => {
 
     assert.equal(Boolean(doji), true)
     assert.equal(doji?.direction, 'neutral')
+  })
+
+  it('detects a morning star as a confirmed three-candle low reversal setup', () => {
+    const history = [
+      makeHistoryPoint('2026-05-16T09:46:00.000Z', 596),
+      makeHistoryPoint('2026-05-16T09:47:00.000Z', 593),
+      makeHistoryPoint('2026-05-16T09:48:00.000Z', 590),
+      makeHistoryPoint('2026-05-16T09:49:00.000Z', 587),
+      makeHistoryPoint('2026-05-16T09:50:00.000Z', 584),
+      makeHistoryPoint('2026-05-16T09:51:00.000Z', 583.8),
+      makeHistoryPoint('2026-05-16T09:52:00.000Z', 584.1),
+      makeHistoryPoint('2026-05-16T09:53:00.000Z', 584.3),
+      makeHistoryPoint('2026-05-16T09:54:00.000Z', 587.2),
+    ]
+
+    const signals = detectPatternSignals(history, makeQuote(590.8))
+    const morningStar = signals.find((signal) => signal.kind === 'morning_star')
+
+    assert.equal(Boolean(morningStar), true)
+    assert.equal(morningStar?.direction, 'bullish')
+    assert.equal(morningStar?.confirmationStatus, 'confirmed')
+    assert.equal(typeof morningStar?.confirmationPrice, 'number')
+    assert.equal(morningStar?.contextTags?.includes('low_location'), true)
+  })
+
+  it('detects an evening star as a confirmed three-candle high reversal risk', () => {
+    const history = [
+      makeHistoryPoint('2026-05-16T09:46:00.000Z', 584),
+      makeHistoryPoint('2026-05-16T09:47:00.000Z', 587),
+      makeHistoryPoint('2026-05-16T09:48:00.000Z', 590),
+      makeHistoryPoint('2026-05-16T09:49:00.000Z', 593),
+      makeHistoryPoint('2026-05-16T09:50:00.000Z', 596),
+      makeHistoryPoint('2026-05-16T09:51:00.000Z', 596.2),
+      makeHistoryPoint('2026-05-16T09:52:00.000Z', 595.9),
+      makeHistoryPoint('2026-05-16T09:53:00.000Z', 595.7),
+      makeHistoryPoint('2026-05-16T09:54:00.000Z', 592.8),
+    ]
+
+    const signals = detectPatternSignals(history, makeQuote(589.2))
+    const eveningStar = signals.find((signal) => signal.kind === 'evening_star')
+
+    assert.equal(Boolean(eveningStar), true)
+    assert.equal(eveningStar?.direction, 'bearish')
+    assert.equal(eveningStar?.confirmationStatus, 'confirmed')
+    assert.equal(eveningStar?.contextTags?.includes('high_location'), true)
+  })
+
+  it('keeps harami as a compression candidate until the mother candle breaks', () => {
+    const history = [
+      makeHistoryPoint('2026-05-16T09:48:00.000Z', 594),
+      makeHistoryPoint('2026-05-16T09:49:00.000Z', 591),
+      makeHistoryPoint('2026-05-16T09:50:00.000Z', 588),
+      makeHistoryPoint('2026-05-16T09:51:00.000Z', 586.2),
+      makeHistoryPoint('2026-05-16T09:52:00.000Z', 586.6),
+      makeHistoryPoint('2026-05-16T09:53:00.000Z', 586.4),
+      makeHistoryPoint('2026-05-16T09:54:00.000Z', 586.5),
+    ]
+
+    const signals = detectPatternSignals(history, makeQuote(586.55))
+    const harami = signals.find((signal) => signal.kind === 'bullish_harami')
+
+    assert.equal(Boolean(harami), true)
+    assert.equal(harami?.confirmationStatus, 'candidate')
+    assert.equal(typeof harami?.confirmationPrice, 'number')
+    assert.equal(harami?.contextTags?.includes('compression'), true)
+  })
+
+  it('treats high-position three white soldiers as exhaustion risk instead of a chase signal', () => {
+    const history = [
+      makeHistoryPoint('2026-05-16T09:46:00.000Z', 584),
+      makeHistoryPoint('2026-05-16T09:47:00.000Z', 586),
+      makeHistoryPoint('2026-05-16T09:48:00.000Z', 588),
+      makeHistoryPoint('2026-05-16T09:49:00.000Z', 590),
+      makeHistoryPoint('2026-05-16T09:50:00.000Z', 592),
+      makeHistoryPoint('2026-05-16T09:51:00.000Z', 594),
+      makeHistoryPoint('2026-05-16T09:52:00.000Z', 596),
+      makeHistoryPoint('2026-05-16T09:53:00.000Z', 598),
+    ]
+
+    const signals = detectPatternSignals(history, makeQuote(600))
+    const soldiers = signals.find((signal) => signal.kind === 'three_white_soldiers')
+
+    assert.equal(Boolean(soldiers), true)
+    assert.equal(soldiers?.direction, 'bearish')
+    assert.equal(soldiers?.contextTags?.includes('blowoff_risk'), true)
+  })
+
+  it('treats low-position three black crows as panic exhaustion instead of a short chase signal', () => {
+    const history = [
+      makeHistoryPoint('2026-05-16T09:46:00.000Z', 600),
+      makeHistoryPoint('2026-05-16T09:47:00.000Z', 598),
+      makeHistoryPoint('2026-05-16T09:48:00.000Z', 596),
+      makeHistoryPoint('2026-05-16T09:49:00.000Z', 594),
+      makeHistoryPoint('2026-05-16T09:50:00.000Z', 592),
+      makeHistoryPoint('2026-05-16T09:51:00.000Z', 590),
+      makeHistoryPoint('2026-05-16T09:52:00.000Z', 588),
+      makeHistoryPoint('2026-05-16T09:53:00.000Z', 586),
+    ]
+
+    const signals = detectPatternSignals(history, makeQuote(584))
+    const crows = signals.find((signal) => signal.kind === 'three_black_crows')
+
+    assert.equal(Boolean(crows), true)
+    assert.equal(crows?.direction, 'neutral')
+    assert.equal(crows?.contextTags?.includes('panic_exhaustion'), true)
   })
 })
 

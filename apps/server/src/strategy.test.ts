@@ -34,7 +34,7 @@ describe('opportunity strategy engine', () => {
     assert.equal(signal.reasons.some((item) => item.includes('RSI14')), true)
     assert.equal(signal.reasons.some((item) => item.includes('MACD')), true)
     assert.equal(signal.probabilityModel.primaryPrediction.horizonMinutes, 60)
-    assert.equal(signal.knowledgeRuleAudit.version, 'gold-kb-rule-pack-v1')
+    assert.equal(signal.knowledgeRuleAudit.version, 'gold-kb-rule-pack-v2')
     assert.equal(signal.finalDecision.hardGates.some((gate) => gate.id === 'kb:rule-pack'), true)
     assert.equal(signal.canonicalForecast.version, 'canonical-forecast-v1')
     assert.equal(signal.canonicalForecast.probability.source, 'probabilityModel.primaryPrediction')
@@ -213,6 +213,55 @@ describe('opportunity strategy engine', () => {
       signal.finalDecision.hardGates.some((gate) => gate.id === 'pattern-confirmation' && gate.status === 'watch'),
       true,
     )
+  })
+
+  it('blocks buy escalation when a bullish pattern has already failed and is cooling down', () => {
+    const signal = evaluateOpportunity({
+      history: [
+        makeHistoryPoint('2026-05-16T09:54:00.000Z', 586),
+        makeHistoryPoint('2026-05-16T09:55:00.000Z', 580),
+        makeHistoryPoint('2026-05-16T09:56:00.000Z', 588),
+        makeHistoryPoint('2026-05-16T09:57:00.000Z', 581),
+      ],
+      latestQuote: makeQuote(579.5),
+      patternSignals: [{
+        id: 'pattern-double-bottom-failed',
+        kind: 'double_bottom',
+        label: '双底失败冷却',
+        direction: 'neutral',
+        confidence: 62,
+        confirmationStatus: 'failed',
+        confirmationReason: '跌破右底失效。',
+        confirmationPrice: 588,
+        stateReason: '双底候选跌破失效价，冷却期内同类形态不能触发强观察。',
+        cooldownBars: 6,
+        contextTags: ['pattern_failed', 'cooldown'],
+        detectedAt: '2026-05-16T10:00:00.000Z',
+        keyPrice: 581,
+        necklinePrice: 588,
+        invalidationPrice: 579.8,
+        targetPrice: 595,
+        expectedConfirmationBars: 6,
+        summary: '双底候选已跌破失效价。',
+        explanation: '测试形态解释。',
+      }],
+      stats: makeStats(),
+      sourceStatus: makeSourceStatus(),
+      technicals: {
+        ma5: 582,
+        ma10: 584,
+        ma20: 583,
+        rsi14: 38,
+        macd: { dif: 0.3, dea: 0.2, histogram: 0.2 },
+        shortTrend: 'rising',
+      },
+    })
+
+    const patternCheck = signal.knowledgeRuleAudit.checks.find((check) => check.id === 'kb:pattern-location')
+
+    assert.equal(patternCheck?.status, 'block')
+    assert.equal(signal.finalDecision.strongReminderAllowed, false)
+    assert.equal(signal.risks.some((item) => item.includes('冷却')), true)
   })
 
   it('builds an executable trade plan with risk reward and invalidation rules', () => {

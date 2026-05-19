@@ -1320,6 +1320,11 @@ function scorePatternSignals(
 
   let adjustment = 0
   for (const pattern of patternSignals.slice(0, 3)) {
+    if (pattern.confirmationStatus === 'failed') {
+      adjustment -= 5
+      risks.push(`${pattern.label}：${pattern.stateReason ?? pattern.summary} 冷却 ${pattern.cooldownBars ?? 6} 根K线，不能作为买点依据。`)
+      continue
+    }
     const weight = Math.round((pattern.confidence - 50) / 10)
     const confirmed = isConfirmedPattern(pattern)
     if (pattern.direction === 'bullish') {
@@ -1328,7 +1333,7 @@ function scorePatternSignals(
         reasons.push(`${pattern.label}：${pattern.summary} 关键价 ${formatCurrency(pattern.keyPrice)}，失效价 ${formatMaybeCurrency(pattern.invalidationPrice)}。`)
       } else {
         adjustment += Math.max(0, Math.min(2, weight))
-        reasons.push(`${pattern.label}仍是候选：${pattern.summary} 需要先确认 ${formatMaybeCurrency(pattern.necklinePrice)}，失效价 ${formatMaybeCurrency(pattern.invalidationPrice)}。`)
+        reasons.push(`${pattern.label}仍是候选：${pattern.summary} 需要先确认 ${formatMaybeCurrency(pattern.confirmationPrice ?? pattern.necklinePrice)}，失效价 ${formatMaybeCurrency(pattern.invalidationPrice)}。`)
         risks.push(`${pattern.label}尚未确认，不能单独放大买点评分。`)
       }
     } else if (pattern.direction === 'bearish') {
@@ -1682,10 +1687,10 @@ function getDecisionSampleStatus(sampleSize: number): FinalDecision['sampleStatu
   if (sampleSize >= 120) {
     return 'robust'
   }
-  if (sampleSize >= 60) {
+  if (sampleSize >= 30) {
     return 'usable'
   }
-  if (sampleSize >= 20) {
+  if (sampleSize >= 15) {
     return 'warming_up'
   }
   return 'insufficient'
@@ -1845,9 +1850,7 @@ function buildTradePlan(input: {
     valuation,
   } = input
   const price = latestQuote.price
-  const bullishPattern =
-    patternSignals.find((pattern) => pattern.direction === 'bullish' && isConfirmedPattern(pattern)) ??
-    patternSignals.find((pattern) => pattern.direction === 'bullish' && pattern.kind !== 'double_bottom')
+  const bullishPattern = patternSignals.find((pattern) => pattern.direction === 'bullish' && isConfirmedPattern(pattern))
   const bearishPattern = patternSignals.find((pattern) => pattern.direction === 'bearish')
   const volatilityStop = valuation.volatility !== null
     ? Math.max(price * 0.0035, price * valuation.volatility * 3)
@@ -1886,6 +1889,8 @@ function buildTradePlan(input: {
   const hasHealthyData = !sourceStatus.stale && getActiveChannelStatus(sourceStatus)?.status === 'healthy'
   const macroPressure = marketContext.factorScore <= 42
   const trendFalling = technicals.shortTrend === 'falling'
+  const eventConfirmationReady = eventRisk.phase !== 'post_confirmation' ||
+    (Boolean(bullishPattern) && shortTerm.reboundPercent >= 0.0015 && technicals.shortTrend !== 'falling')
   const nearHigh = stats.high24h > stats.low24h
     ? (stats.currentPrice - stats.low24h) / (stats.high24h - stats.low24h) >= 0.72
     : false
@@ -1897,6 +1902,7 @@ function buildTradePlan(input: {
     nearHigh ? '当前接近日内高位，追单风险较高。' : null,
     riskRewardRatio !== null && riskRewardRatio < 2 ? '风险收益比不足 2:1，不能作为强买点。' : null,
     eventRisk.level === 'critical' || eventRisk.level === 'elevated' ? `事件风控生效：${eventRisk.summary}` : null,
+    eventRisk.phase === 'post_confirmation' && !eventConfirmationReady ? '事件后确认窗口仍缺整理/回踩/方向一致证据，先观察第一波噪声过去。' : null,
   ])
   const canProbe = finalScore >= 45 && hasHealthyData && !nearHigh
   const canConfirmEnter =
@@ -1905,6 +1911,8 @@ function buildTradePlan(input: {
     !macroPressure &&
     eventRisk.level !== 'critical' &&
     eventRisk.level !== 'elevated' &&
+    eventConfirmationReady &&
+    Boolean(bullishPattern) &&
     riskRewardRatio !== null &&
     riskRewardRatio >= 2.5 &&
     !nearHigh
