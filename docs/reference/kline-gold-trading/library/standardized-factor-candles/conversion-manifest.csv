@@ -1,0 +1,11 @@
+symbol,source_file,rows,first_date,last_date,status
+CPIAUCSL,mirror-ivo-fred-CPIAUCSL.csv,951,1947-01-01,2026-04-01,converted
+CPILFESL,mirror-ivo-fred-CPILFESL.csv,831,1957-01-01,2026-04-01,converted
+DGS10,mirror-ivo-fred-dgs10.csv,16078,1962-01-02,2026-05-15,converted
+DFII10,mirror-ivo-fred-DFII10.csv,4892,2003-01-02,2026-05-15,converted
+T10YIE,mirror-ivo-fred-T10YIE.csv,5848,2003-01-02,2026-05-18,converted
+DTWEXBGS,mirror-ivo-fred-DTWEXBGS.csv,5107,2006-01-02,2026-05-15,converted
+DEXCHUS,mirror-ivo-fred-DEXCHUS.csv,11325,1981-01-02,2026-05-15,converted
+VIXCLS,mirror-ivo-fred-VIXCLS.csv,9187,1990-01-02,2026-05-15,converted
+CPIAUCSL_GITHUB_SAMPLE,mirror-github-cpiaucsl-1947-2020.csv,886,1947-01-01,2020-10-01,converted
+US10Y_MONTHLY_SAMPLE,mirror-datasets-us-10y-monthly.csv,876,1953-04-01,2026-03-01,converted

@@ -35,18 +35,40 @@ describe('selective backtest monitor', () => {
 
   it('groups walk-forward performance by pattern and macro regime when snapshots contain context', () => {
     const snapshots = [
-      makeSnapshot('2026-05-16T09:00:00.000Z', 100, 64, 'watch', 'double_bottom', 'supportive'),
+      makeSnapshot('2026-05-16T09:00:00.000Z', 100, 64, 'watch', 'double_bottom', 'supportive', {
+        macroRegimeEvidenceStatus: 'supportive',
+        inflationPhase: 'sticky',
+        realRateTrend: 'falling',
+        usdCnyAlignment: 'cny_gold_support',
+        cmeBreakoutQuality: 'confirmed',
+      }),
       makeSnapshot('2026-05-16T09:01:00.000Z', 102, 38, 'none', null, 'neutral'),
-      makeSnapshot('2026-05-16T09:02:00.000Z', 101, 66, 'watch', 'double_bottom', 'supportive'),
+      makeSnapshot('2026-05-16T09:02:00.000Z', 101, 66, 'watch', 'double_bottom', 'supportive', {
+        macroRegimeEvidenceStatus: 'supportive',
+        inflationPhase: 'sticky',
+        realRateTrend: 'falling',
+        usdCnyAlignment: 'cny_gold_support',
+        cmeBreakoutQuality: 'confirmed',
+      }),
       makeSnapshot('2026-05-16T09:03:00.000Z', 104, 35, 'none', null, 'pressure'),
     ]
 
     const monitor = buildBacktestMonitor(snapshots, 1)
     const patternBucket = monitor.buckets.find((bucket) => bucket.key === 'pattern:double_bottom')
     const macroBucket = monitor.buckets.find((bucket) => bucket.key === 'macro:supportive')
+    const macroRegimeBucket = monitor.buckets.find((bucket) => bucket.key === 'macro_regime:supportive')
+    const inflationBucket = monitor.buckets.find((bucket) => bucket.key === 'inflation_phase:sticky')
+    const realRateBucket = monitor.buckets.find((bucket) => bucket.key === 'real_rate_trend:falling')
+    const currencyBucket = monitor.buckets.find((bucket) => bucket.key === 'usd_cny_alignment:cny_gold_support')
+    const cmeBucket = monitor.buckets.find((bucket) => bucket.key === 'cme_breakout_quality:confirmed')
 
     assert.equal(Boolean(patternBucket), true)
     assert.equal(Boolean(macroBucket), true)
+    assert.equal(Boolean(macroRegimeBucket), true)
+    assert.equal(Boolean(inflationBucket), true)
+    assert.equal(Boolean(realRateBucket), true)
+    assert.equal(Boolean(currencyBucket), true)
+    assert.equal(Boolean(cmeBucket), true)
     assert.equal(patternBucket?.qualifiedSamples, 2)
   })
 

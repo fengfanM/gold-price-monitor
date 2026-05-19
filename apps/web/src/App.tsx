@@ -30,6 +30,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type PointerEvent as ReactPointerEvent,
 } from 'react'
 import './App.css'
 
@@ -37,6 +38,7 @@ type SourceHealth = 'live' | 'stale' | 'offline'
 type ViewMode = 'intraday' | 'candles'
 type TerminalView = 'dashboard' | 'backtest' | 'providers'
 type Timeframe = '1m' | '5m' | '15m' | '60m'
+type ChartTimeWindowKind = 'auto' | 'since18' | '6h' | '2h' | 'custom'
 type TimeframeConfig = {
   id: Timeframe
   label: string
@@ -47,6 +49,8 @@ type QuoteBoardTab = 'consensus' | 'icbc' | 'sge' | 'banks'
 type OpportunityLevel = 'normal' | 'watch' | 'strong' | 'elevated' | 'critical' | 'none'
 type OpportunityTab = 'decision' | 'plan' | 'risk' | 'evidence' | 'validation'
 type Indicator = 'ma' | 'boll' | 'rsi' | 'macd'
+type ChartSourceId = 'icbc' | 'consensus' | 'au9999' | 'autd' | 'zheshang' | 'domesticGold' | 'london'
+type TradingSession = NonNullable<QuotePayload['marketReference']['tradingSession']>
 type ExpertAction = 'accumulate' | 'watch' | 'wait' | 'avoid'
 type ExpertStance = 'bullish' | 'neutral' | 'cautious' | 'risk_off'
 
@@ -73,6 +77,8 @@ type ExpertConsensus = {
 
 type MarketFactorStatus = 'live' | 'derived' | 'unavailable'
 type MarketFactorImpact = 'supportive' | 'neutral' | 'pressure' | 'unknown'
+type MarketFactorSourceUsage = 'production_realtime' | 'mirror_learning' | 'production_disabled' | 'derived' | 'unknown'
+type MacroRegimeStatus = 'supportive' | 'neutral' | 'pressure' | 'conflicted' | 'unknown'
 
 type MarketFactor = {
   id: string
@@ -85,6 +91,24 @@ type MarketFactor = {
   status: MarketFactorStatus
   summary: string
   updatedAt: string | null
+  sourceUsage?: MarketFactorSourceUsage
+  isProductionEligible?: boolean
+}
+
+type MacroRegimeEvidence = {
+  status: MacroRegimeStatus
+  scoreImpact: number
+  confidence: number
+  supportingReasons: string[]
+  opposingReasons: string[]
+  sourceUsage: MarketFactorSourceUsage
+  isProductionEligible: boolean
+  stalenessWarning: string
+  sourceSummary: string
+  inflationPhase: 'accelerating' | 'sticky' | 'cooling' | 'unknown'
+  realRateTrend: 'rising' | 'falling' | 'flat' | 'unknown'
+  usdCnyAlignment: 'cny_gold_support' | 'cny_gold_pressure' | 'neutral' | 'unknown'
+  cmeBreakoutQuality: 'confirmed' | 'not_confirmed' | 'unavailable' | 'unknown'
 }
 
 type SentimentFactor = {
@@ -166,6 +190,9 @@ type BacktestBucket = {
   maxDrawdown: number | null
   mae: number | null
   mfe: number | null
+  tp1HitRate?: number | null
+  stopLossHitRate?: number | null
+  timeoutRate?: number | null
   incompleteRate?: number | null
   reliability: number
   summary: string
@@ -215,6 +242,7 @@ type ExternalModelBacktestBucket = {
   mfeMaeRatio: number | null
   brierScore: number | null
   calibrationError: number | null
+  liveCoverage?: number | null
   reliability: number
   summary: string
 }
@@ -269,6 +297,7 @@ type MarketContext = {
     usdCny: MarketFactor
   }
   macroFactors?: MarketFactor[]
+  macroRegimeEvidence?: MacroRegimeEvidence | null
   sentiment: {
     news: SentimentFactor
     blogger: SentimentFactor
@@ -298,6 +327,8 @@ type OpportunityPayload = {
   externalModelAdvisor?: ExternalModelAdvisor | null
   canonicalForecast?: CanonicalForecast | null
   decisionOverlay?: DecisionOverlay | null
+  finalDecision?: FinalDecision | null
+  decisionView?: DecisionViewModel | null
 }
 
 type OpportunityInfo = {
@@ -319,6 +350,71 @@ type OpportunityInfo = {
   externalModelAdvisor: ExternalModelAdvisor | null
   canonicalForecast: CanonicalForecast | null
   decisionOverlay: DecisionOverlay | null
+  finalDecision: FinalDecision | null
+  decisionView: DecisionViewModel | null
+}
+
+type FinalDecision = {
+  action: 'avoid' | 'wait' | 'watch' | 'probe' | 'confirm_then_enter' | 'reduce'
+  actionLabel: string
+  signalGrade: 'blocked' | 'low' | 'watch' | 'qualified' | 'strong_watch'
+  strongReminderAllowed: boolean
+  userAdvice: string
+  beginnerAdvice: string
+  blockedReasons: string[]
+  downgradeReasons: string[]
+  hardGates: Array<{
+    id: string
+    label: string
+    status: 'pass' | 'watch' | 'block'
+    reason: string
+  }>
+  confidenceGrade: 'unverified' | 'low' | 'medium' | 'high'
+  confidenceExplanation: string
+  accuracyExplanation: string
+  sampleStatus: 'insufficient' | 'warming_up' | 'usable' | 'robust'
+}
+
+type DecisionViewModel = {
+  version: 'decision-view-v1'
+  action: FinalDecision['action']
+  displayGrade: FinalDecision['signalGrade']
+  primaryInstruction: string
+  beginnerInstruction: string
+  canAct: boolean
+  triggerPrice: number | null
+  stopLoss: number | null
+  takeProfit1: number | null
+  riskRewardRatio: number | null
+  probabilityDisplay: {
+    mode: 'hidden' | 'tendency' | 'calibrated'
+    value: number | null
+    label: string
+    reason: string
+  }
+  calibrationStatus: {
+    sampleSize: number
+    brierScore: number | null
+    sampleStatus: FinalDecision['sampleStatus']
+    canShowNumericProbability: boolean
+    reason: string
+  }
+  levelValidation: {
+    support: LevelValidationItem
+    resistance: LevelValidationItem
+    trigger: LevelValidationItem
+    stopLoss: LevelValidationItem
+    takeProfit1: LevelValidationItem
+  }
+  sourceWarnings: string[]
+  blockerSummary: string
+  updatedAt: string
+}
+
+type LevelValidationItem = {
+  price: number | null
+  status: 'valid' | 'invalid' | 'missing'
+  reason: string
 }
 
 type ExternalModelAdvisor = {
@@ -568,11 +664,39 @@ type QuotePayload = {
     reason: string
   }
   quality?: DataQualityInfo | null
+  sourceLedger?: QuoteSourceLedger | null
   marketContext?: MarketContext | null
   patternSignals?: PatternSignal[] | null
   opportunity?: OpportunityPayload | null
   buySignal?: OpportunityPayload | null
   buy_signal?: OpportunityPayload | null
+}
+
+type QuoteSourceLedger = {
+  version: 'quote-source-ledger-v1'
+  generatedAt: string
+  tradeSourceId: string
+  tradePrice: number
+  consensus: {
+    price: number | null
+    deviationPercent: number | null
+    status: 'aligned' | 'diverged' | 'unknown'
+  }
+  entries: Array<{
+    sourceId: string
+    label: string
+    instrument: string
+    tradable: boolean
+    price: number | null
+    timestamp: string | null
+    marketSession: 'trading' | 'closed' | 'unknown'
+    sourceUsage: 'production_realtime' | 'reference_calibration' | 'mirror_learning' | 'disabled'
+    freshnessMs: number | null
+    confidence: 'high' | 'medium' | 'low'
+    discrepancyFromTradePrice: number | null
+    note: string
+  }>
+  warnings: string[]
 }
 
 type PatternSignal = {
@@ -632,6 +756,28 @@ type HistoryPoint = {
   timestamp: string
   referenceAnchorPrice?: number | null
   referenceAu9999Price?: number | null
+  referenceAutdPrice?: number | null
+  referenceZheshangPrice?: number | null
+  referenceDomesticGoldPrice?: number | null
+  referenceInternationalGoldPrice?: number | null
+}
+
+type ChartSourceOption = {
+  id: ChartSourceId
+  label: string
+  shortLabel: string
+  unit: string
+  available: boolean
+  reason: string
+  latestPrice: number | null
+}
+
+type ChartHistoryProjection = {
+  history: HistoryPoint[]
+  mode: 'native' | 'proxy'
+  exactPointCount: number
+  totalPointCount: number
+  coverage: number
 }
 
 type CandlePayload = {
@@ -672,6 +818,24 @@ type CandleDatum = {
   close: number
 }
 
+type ChartVisibleRange = {
+  from: UTCTimestamp
+  to: UTCTimestamp
+}
+
+type ChartScrubberInfo = {
+  disabled: boolean
+  firstTime: UTCTimestamp | null
+  latestTime: UTCTimestamp | null
+  startPercent: number
+  endPercent: number
+  startLabel: string
+  endLabel: string
+  visibleLabel: string
+  selectedStartLabel: string
+  selectedEndLabel: string
+}
+
 type BollingerBands = {
   upper: LineDatum[]
   middle: LineDatum[]
@@ -707,6 +871,8 @@ type ChartPrediction = {
   confidence: number
   label: string
   basis: string
+  showProbability: boolean
+  displayText: string
 }
 
 type HardGateStatus = 'pass' | 'watch' | 'block'
@@ -780,12 +946,30 @@ const TIMEFRAMES: TimeframeConfig[] = [
   { id: '60m', label: '60分', minutes: 60, visibleBars: 96 },
 ]
 
+const CHART_TIME_WINDOWS: Array<{ id: ChartTimeWindowKind; label: string; title: string }> = [
+  { id: 'auto', label: '全部', title: '显示当前加载窗口内的完整走势' },
+  { id: 'since18', label: '18点起', title: '定位到最近一个 18:00 到当前' },
+  { id: '6h', label: '近6h', title: '定位到最近 6 小时' },
+  { id: '2h', label: '近2h', title: '定位到最近 2 小时' },
+  { id: 'custom', label: '手动', title: '拖动或缩放时间轴后自动进入手动范围' },
+]
+
 const QUOTE_BOARD_TABS: Array<{ id: QuoteBoardTab; label: string }> = [
   { id: 'consensus', label: '校准价' },
   { id: 'icbc', label: '工银' },
   { id: 'sge', label: 'AU9999' },
   { id: 'banks', label: '银行参考' },
 ]
+
+const CHART_SOURCE_LABELS: Record<ChartSourceId, { label: string; shortLabel: string; unit: string }> = {
+  icbc: { label: '工银积存金', shortLabel: '工银', unit: '元/克' },
+  consensus: { label: '多源校准价', shortLabel: '校准', unit: '元/克' },
+  au9999: { label: 'AU9999 沪金', shortLabel: 'AU9999', unit: '元/克' },
+  autd: { label: 'Au(T+D)', shortLabel: 'AuTD', unit: '元/克' },
+  zheshang: { label: '浙商积存金', shortLabel: '浙商', unit: '元/克' },
+  domesticGold: { label: '金投网国内金', shortLabel: '国内金', unit: '元/克' },
+  london: { label: '伦敦金 / 国际金', shortLabel: '伦敦金', unit: '美元/盎司' },
+}
 
 const INDICATORS: Array<{ id: Indicator; label: string }> = [
   { id: 'ma', label: 'MA' },
@@ -822,6 +1006,9 @@ function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('intraday')
   const [terminalView, setTerminalView] = useState<TerminalView>('dashboard')
   const [timeframe, setTimeframe] = useState<Timeframe>('5m')
+  const [chartTimeWindow, setChartTimeWindow] = useState<ChartTimeWindowKind>('auto')
+  const [customChartRange, setCustomChartRange] = useState<ChartVisibleRange | null>(null)
+  const [chartSource, setChartSource] = useState<ChartSourceId>('icbc')
   const [quoteBoardTab, setQuoteBoardTab] = useState<QuoteBoardTab>('consensus')
   const [activeIndicators, setActiveIndicators] = useState<Indicator[]>([
     'ma',
@@ -992,21 +1179,43 @@ function App() {
 
   const activeTimeframe = TIMEFRAMES.find((item) => item.id === timeframe) ?? TIMEFRAMES[1]
   const renderableHistory = useMemo(() => buildRenderableHistory(history, quote), [history, quote])
-  const recentHistory = useMemo(() => selectRecentHistory(renderableHistory, 24), [renderableHistory])
-  const sessionHistory = useMemo(() => selectLatestActiveSessionHistory(recentHistory), [recentHistory])
+  const chartSources = useMemo(() => buildChartSourceOptions(quote, renderableHistory), [quote, renderableHistory])
+  const selectedChartSource = chartSources.find((item) => item.id === chartSource && item.available)
+    ?? chartSources.find((item) => item.available)
+    ?? chartSources[0]
+  const activeChartSource = selectedChartSource.id
+  const chartProjection = useMemo(
+    () => projectHistoryForChartSource(renderableHistory, activeChartSource),
+    [activeChartSource, renderableHistory],
+  )
+  const chartRenderableHistory = chartProjection.history
+  const chartSourceCoverageLabel = chartProjection.mode === 'proxy'
+    ? `代理回填 ${percentFormatter.format(chartProjection.coverage * 100)}% 原始点`
+    : `原始序列 ${chartProjection.exactPointCount}点`
+  const chartQuote = useMemo(() => projectQuoteForChartSource(quote, activeChartSource), [activeChartSource, quote])
+  const recentHistory = useMemo(() => selectRecentHistory(chartRenderableHistory, 24), [chartRenderableHistory])
   const intradayData = useMemo(
-    () => buildIntradayData(sessionHistory, activeTimeframe.minutes, activeTimeframe.visibleBars),
-    [activeTimeframe.minutes, activeTimeframe.visibleBars, sessionHistory],
+    () => buildIntradayData(recentHistory, activeTimeframe.minutes, activeTimeframe.visibleBars),
+    [activeTimeframe.minutes, activeTimeframe.visibleBars, recentHistory],
   )
   const candleData = useMemo(
     () => {
       const apiCandles = mapServerCandles(serverCandles[timeframe])
-      const mergedCandles = apiCandles.length > 0
-        ? mergeLatestQuoteIntoCandles(apiCandles, quote, activeTimeframe.minutes)
-        : buildCandles(sessionHistory, activeTimeframe.minutes)
+      const mergedCandles = apiCandles.length > 0 && activeChartSource === 'icbc'
+        ? mergeLatestQuoteIntoCandles(apiCandles, chartQuote, activeTimeframe.minutes)
+        : buildCandles(recentHistory, activeTimeframe.minutes)
       return selectVisibleCandles(mergedCandles, activeTimeframe.visibleBars)
     },
-    [activeTimeframe.minutes, activeTimeframe.visibleBars, quote, serverCandles, sessionHistory, timeframe],
+    [activeChartSource, activeTimeframe.minutes, activeTimeframe.visibleBars, chartQuote, serverCandles, recentHistory, timeframe],
+  )
+  const chartTimelineData = viewMode === 'intraday' ? intradayData.price : candleData
+  const chartVisibleRange = useMemo(
+    () => buildChartVisibleRange(
+      chartTimeWindow,
+      chartTimelineData,
+      customChartRange,
+    ),
+    [chartTimeWindow, chartTimelineData, customChartRange],
   )
   const quoteRows = [
     quote?.marketReference.au9999,
@@ -1028,10 +1237,18 @@ function App() {
   const anchorPremium = displayAnchor.premiumPercent
   const withinReferenceRange = displayAnchor.withinRange
   const buySignal = useMemo(() => normalizeOpportunity(quote), [quote])
-  const patternSignals = buySignal?.patternSignals ?? quote?.patternSignals ?? []
+  const patternSignals = useMemo(
+    () => mergePatternSignals(buySignal?.patternSignals ?? [], quote?.patternSignals ?? []),
+    [buySignal?.patternSignals, quote?.patternSignals],
+  )
   const chartPrediction = useMemo(
     () => buildChartPrediction(buySignal, backtestMonitor),
     [backtestMonitor, buySignal],
+  )
+  const baseTradingSession = quote?.marketReference.tradingSession ?? null
+  const chartTradingSession = useMemo(
+    () => buildChartTradingSession(activeChartSource, baseTradingSession, now),
+    [activeChartSource, baseTradingSession, now],
   )
   const signalTransparency = useMemo(
     () => buildSignalTransparency(buySignal, backtestMonitor, chartPrediction),
@@ -1044,6 +1261,12 @@ function App() {
   const signalMeta = getOpportunityMeta(buySignal?.level ?? 'none')
   const signalScoreText = formatScore(buySignal?.score ?? null)
   const dataStatus = buildDataStatus(quote, error, lastAttemptText)
+  const sourceLedgerAlert = quote?.sourceLedger?.warnings.find((warning) =>
+    warning.includes('报价口径不一致') ||
+    warning.includes('陈旧') ||
+    warning.includes('备用源') ||
+    warning.includes('备用行情')
+  ) ?? null
   const toggleIndicator = (indicator: Indicator) => {
     setActiveIndicators((current) => {
       return current.includes(indicator)
@@ -1052,6 +1275,23 @@ function App() {
     })
     setViewMode('candles')
   }
+  const handleChartRangeChange = useCallback((range: ChartVisibleRange) => {
+    setCustomChartRange(range)
+    setChartTimeWindow('custom')
+  }, [])
+  const selectChartTimeWindow = (windowKind: ChartTimeWindowKind) => {
+    if (windowKind !== 'custom') {
+      setCustomChartRange(null)
+    }
+    setChartTimeWindow(windowKind)
+  }
+  const chartScrubber = useMemo(
+    () => buildChartScrubberInfo(chartTimelineData, chartVisibleRange),
+    [chartTimelineData, chartVisibleRange],
+  )
+  const handleChartScrubberChange = useCallback((range: ChartVisibleRange) => {
+    handleChartRangeChange(range)
+  }, [handleChartRangeChange])
 
   return (
     <main className="terminal">
@@ -1088,6 +1328,20 @@ function App() {
           <small>{lastUpdatedText}</small>
         </div>
       </header>
+
+      {quote?.sourceLedger && sourceLedgerAlert ? (
+        <section className="source-ledger-warning" aria-label="报价源口径提醒">
+          <AlertTriangle size={16} />
+          <strong>报价源复核</strong>
+          <span>{sourceLedgerAlert}</span>
+          <small>
+            主交易价 {currencyFormatter.format(quote.sourceLedger.tradePrice)}
+            {quote.sourceLedger.consensus.price !== null
+              ? ` · 共识 ${currencyFormatter.format(quote.sourceLedger.consensus.price)}`
+              : ' · 共识暂缺'}
+          </small>
+        </section>
+      ) : null}
 
       {dataStatus ? (
         <section className={`status-row status-row--${dataStatus.tone}`}>
@@ -1162,19 +1416,50 @@ function App() {
                   : `${signalMeta.label} · 条件复核`}
             </strong>
             <span>
-              {buySignal.summary}
+              {buySignal.decisionView?.primaryInstruction ?? buySignal.summary}
               {buySignal.reasons[0] ? ` · ${buySignal.reasons[0]}` : ''}
             </span>
             <small>
-              {buySignal.level === 'strong'
-                ? '强信号也必须通过硬门槛、分批与止损复核；不构成收益承诺。'
-                : '观察级只提示复核条件，不提示追价或立即交易。'}
+              {buySignal.decisionView?.beginnerInstruction ??
+                (buySignal.level === 'strong'
+                  ? '强信号也必须通过硬门槛、分批与止损复核；不构成收益承诺。'
+                  : '观察级只提示复核条件，不提示追价或立即交易。')}
             </small>
           </div>
           <div className="opportunity-alert__score">
-            <span>Up Prob</span>
-            <strong>{formatProbability(signalTransparency.probability)}</strong>
+            <span>{buySignal.decisionView?.probabilityDisplay.label ?? 'TP1倾向'}</span>
+            <strong>
+              {buySignal.decisionView?.probabilityDisplay.mode === 'calibrated' &&
+              buySignal.decisionView.probabilityDisplay.value !== null
+                ? formatProbability(buySignal.decisionView.probabilityDisplay.value * 100)
+                : '不显示'}
+            </strong>
           </div>
+        </section>
+      ) : null}
+
+      {buySignal?.decisionView ? (
+        <section className="trader-command-card" aria-label="交易员口令卡">
+          <article>
+            <span>现在动作</span>
+            <strong>{buySignal.finalDecision?.actionLabel ?? signalMeta.label}</strong>
+            <small>{buySignal.decisionView.primaryInstruction}</small>
+          </article>
+          <article>
+            <span>等待价位</span>
+            <strong>{formatMaybePrice(buySignal.decisionView.triggerPrice)}</strong>
+            <small>{buySignal.decisionView.levelValidation.trigger.reason}</small>
+          </article>
+          <article>
+            <span>错了退出</span>
+            <strong>{formatMaybePrice(buySignal.decisionView.stopLoss)}</strong>
+            <small>{buySignal.decisionView.levelValidation.stopLoss.reason}</small>
+          </article>
+          <article>
+            <span>为什么克制</span>
+            <strong>{buySignal.decisionView.displayGrade}</strong>
+            <small>{buySignal.decisionView.blockerSummary}</small>
+          </article>
         </section>
       ) : null}
 
@@ -1259,6 +1544,36 @@ function App() {
               ))}
             </div>
 
+            <div className="chart-range-group" aria-label="时间范围">
+              {CHART_TIME_WINDOWS.map((item) => (
+                <button
+                  className={chartTimeWindow === item.id ? 'is-active' : ''}
+                  disabled={item.id === 'custom' && customChartRange === null}
+                  key={item.id}
+                  onClick={() => selectChartTimeWindow(item.id)}
+                  title={item.title}
+                  type="button"
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="chart-source-group" aria-label="行情源">
+              {chartSources.map((item) => (
+                <button
+                  className={activeChartSource === item.id ? 'is-active' : ''}
+                  disabled={!item.available}
+                  key={item.id}
+                  onClick={() => setChartSource(item.id)}
+                  title={item.reason}
+                  type="button"
+                >
+                  {item.shortLabel}
+                </button>
+              ))}
+            </div>
+
             <div className="indicator-group" aria-label="指标">
               {INDICATORS.map((item) => (
                 <button
@@ -1284,34 +1599,49 @@ function App() {
               <span title="分层实时刷新：行情快照约3秒，回测15秒，源探测60秒；宏观慢源按服务端缓存刷新。">
                 实时 {LIVE_REFRESH_INTERVAL_MS / 1000}s · 回测 {BACKTEST_REFRESH_INTERVAL_MS / 1000}s
               </span>
+              <span title={selectedChartSource.reason}>
+                当前 {selectedChartSource.label} · {chartSourceCoverageLabel}
+              </span>
             </div>
           </div>
+
+          <TradingSessionBanner session={chartTradingSession} />
 
           {viewMode === 'intraday' ? (
             <IntradayChartPanel
               indicators={activeIndicators}
               isLoading={isLoading}
-              latestPrice={quote?.price ?? null}
-              latestReference={quote?.marketReference.calibration.anchorPrice ?? null}
+              latestPrice={chartQuote?.price ?? null}
+              latestReference={activeChartSource === 'icbc' ? quote?.marketReference.calibration.anchorPrice ?? null : null}
               opportunity={buySignal}
               priceData={intradayData.price}
               patternSignals={patternSignals}
               prediction={chartPrediction}
               referenceData={intradayData.reference}
               signal={chartSignal}
+              tradingSession={chartTradingSession}
               timeframeLabel={activeTimeframe.label}
+              visibleRange={chartVisibleRange}
+              onVisibleRangeChange={handleChartRangeChange}
+              rangeScrubberInfo={chartScrubber}
+              onRangeScrubberChange={handleChartScrubberChange}
             />
           ) : (
             <CandlestickChartPanel
               candleData={candleData}
               indicators={activeIndicators}
               isLoading={isLoading}
-              latestPrice={quote?.price ?? null}
+              latestPrice={chartQuote?.price ?? null}
               opportunity={buySignal}
               patternSignals={patternSignals}
               prediction={chartPrediction}
               signal={chartSignal}
+              tradingSession={chartTradingSession}
               timeframeLabel={activeTimeframe.label}
+              visibleRange={chartVisibleRange}
+              onVisibleRangeChange={handleChartRangeChange}
+              rangeScrubberInfo={chartScrubber}
+              onRangeScrubberChange={handleChartScrubberChange}
             />
           )}
           <ChartInsightDeck
@@ -1379,7 +1709,7 @@ function App() {
                   />
                   <StatLine
                     label="交易时段"
-                    value={quote?.marketReference.tradingSession?.isTradingTime ? '交易中' : '休市/非主时段'}
+                    value={formatTradingSessionStatus(chartTradingSession)}
                   />
                   <p className="panel-note">{displayAnchor.note}</p>
                 </Panel>
@@ -1899,11 +2229,12 @@ function ExternalModelBacktestPanel(props: {
               <span>{bucket.qualifiedSamples}/{bucket.sampleSize} 合格</span>
             </div>
             <div className="bucket-card__metrics">
-              <small>胜率 {formatNullablePercent(bucket.winRate)}</small>
+              <small>{bucket.qualifiedSamples > 0 ? `胜率 ${formatNullablePercent(bucket.winRate)}` : '胜率 暂无 live 样本'}</small>
               <small>超额 {formatNullablePercent(bucket.excessWinRate)}</small>
               <small>PF {formatNullableRatio(bucket.profitFactor)}</small>
               <small>Brier {formatNullableRatio(bucket.brierScore)}</small>
               <small>MAE {formatNullablePercent(bucket.mae)}</small>
+              <small>live覆盖 {formatNullablePercent(bucket.liveCoverage ?? null)}</small>
               <small>可信 {bucket.reliability}/100</small>
             </div>
             {!props.compact ? <p>{bucket.summary}</p> : null}
@@ -1931,23 +2262,27 @@ function BucketBacktestPanel(props: { buckets: BacktestBucket[]; compact?: boole
         <span>按形态/周期/时段/宏观拆解</span>
       </header>
       <div className="bucket-backtest-grid">
-        {props.buckets.slice(0, props.compact ? 3 : 8).map((bucket) => (
-          <article className="bucket-card" key={bucket.key}>
-            <div>
-              <strong>{bucket.label}</strong>
-              <span>{bucket.qualifiedSamples}/{bucket.sampleSize} 合格</span>
-            </div>
-            <div className="bucket-card__metrics">
-              <small>胜率 {formatNullablePercent(bucket.winRate)}</small>
-              <small>基准 {formatNullablePercent(bucket.baselineWinRate)}</small>
-              <small>PF {formatNullableRatio(bucket.profitFactor)}</small>
-              <small>MAE {formatNullablePercent(bucket.mae)}</small>
-              <small>MFE {formatNullablePercent(bucket.mfe)}</small>
-              <small>可信 {bucket.reliability}/100</small>
-            </div>
-            {!props.compact ? <p>{bucket.summary}</p> : null}
-          </article>
-        ))}
+        {props.buckets.slice(0, props.compact ? 3 : 8).map((bucket) => {
+          const completeSamples = estimateCompleteSamples(bucket)
+          const hasCompleteSamples = completeSamples > 0
+          return (
+            <article className="bucket-card" key={bucket.key}>
+              <div>
+                <strong>{bucket.label}</strong>
+                <span>{bucket.qualifiedSamples}/{bucket.sampleSize} 合格</span>
+              </div>
+              <div className="bucket-card__metrics">
+                <small>{hasCompleteSamples ? `胜率 ${formatNullablePercent(bucket.winRate)}` : '胜率 等待完整样本'}</small>
+                <small>{hasCompleteSamples ? `基准 ${formatNullablePercent(bucket.baselineWinRate)}` : `完整样本 ${completeSamples}`}</small>
+                <small>{hasCompleteSamples ? `PF ${formatNullableRatio(bucket.profitFactor)}` : `未完成 ${formatNullablePercentUnsigned(bucket.incompleteRate ?? null)}`}</small>
+                <small>MAE {formatNullablePercent(bucket.mae)}</small>
+                <small>MFE {formatNullablePercent(bucket.mfe)}</small>
+                <small>可信 {bucket.reliability}/100</small>
+              </div>
+              {!props.compact ? <p>{bucket.summary}</p> : null}
+            </article>
+          )
+        })}
       </div>
     </div>
   )
@@ -2370,9 +2705,13 @@ function MarketContextRadar(props: { context: MarketContext }) {
         <strong>{props.context.factorScore}/100</strong>
         <p>{props.context.summary}</p>
       </div>
+      {props.context.macroRegimeEvidence ? (
+        <MacroRegimeEvidencePanel evidence={props.context.macroRegimeEvidence} />
+      ) : null}
       <SourceAuditPanel
         factors={[...baseFactors, ...macroFactors]}
         sentiment={props.context.sentiment}
+        macroRegimeEvidence={props.context.macroRegimeEvidence ?? null}
       />
       <div className="market-factor-groups">
         {factorGroups.map((group) => (
@@ -2386,7 +2725,9 @@ function MarketContextRadar(props: { context: MarketContext }) {
                     {getImpactLabel(factor.impact)}
                   </em>
                   <strong>{formatMarketFactorValue(factor)}</strong>
-                  <small>{formatMarketFactorChange(factor)}</small>
+                  <small>
+                    {formatMarketFactorChange(factor)} · {getSourceUsageLabel(factor.sourceUsage ?? sourceUsageFromStatus(factor.status))}
+                  </small>
                   <details className="factor-explainer">
                     <summary>看懂这个指标</summary>
                     <p>{factor.summary}</p>
@@ -2417,6 +2758,44 @@ function MarketContextRadar(props: { context: MarketContext }) {
           <small>{getMarketStatusLabel(props.context.backtest.status)}</small>
         </div>
       </div>
+    </section>
+  )
+}
+
+function MacroRegimeEvidencePanel(props: { evidence: MacroRegimeEvidence }) {
+  const evidence = props.evidence
+  const reasons = [
+    ...evidence.opposingReasons.slice(0, 3),
+    ...evidence.supportingReasons.slice(0, Math.max(0, 3 - evidence.opposingReasons.length)),
+  ]
+  return (
+    <section className={`macro-regime-evidence macro-regime-evidence--${evidence.status}`}>
+      <header>
+        <div>
+          <span>宏观 Regime 证据</span>
+          <strong>{getMacroRegimeStatusLabel(evidence.status)}</strong>
+        </div>
+        <em className={`source-usage-badge source-usage-badge--${evidence.sourceUsage}`}>
+          {getSourceUsageLabel(evidence.sourceUsage)}
+        </em>
+      </header>
+      <p>{evidence.sourceSummary}</p>
+      <div className="macro-regime-evidence__facts">
+        <span>影响 {evidence.scoreImpact > 0 ? `+${evidence.scoreImpact}` : evidence.scoreImpact}</span>
+        <span>置信 {evidence.confidence}/100</span>
+        <span>实际利率 {getRealRateTrendLabel(evidence.realRateTrend)}</span>
+        <span>通胀 {getInflationPhaseLabel(evidence.inflationPhase)}</span>
+        <span>汇率 {getUsdCnyAlignmentLabel(evidence.usdCnyAlignment)}</span>
+        <span>CME {getCmeQualityLabel(evidence.cmeBreakoutQuality)}</span>
+      </div>
+      {reasons.length > 0 ? (
+        <ul>
+          {reasons.map((reason) => (
+            <li key={reason}>{reason}</li>
+          ))}
+        </ul>
+      ) : null}
+      <small>{evidence.stalenessWarning}</small>
     </section>
   )
 }
@@ -2456,10 +2835,15 @@ function SentimentFactorCard(props: { factor: SentimentFactor }) {
 function SourceAuditPanel(props: {
   factors: MarketFactor[]
   sentiment: MarketContext['sentiment']
+  macroRegimeEvidence?: MacroRegimeEvidence | null
 }) {
   const live = props.factors.filter((factor) => factor.status === 'live').length
   const derived = props.factors.filter((factor) => factor.status === 'derived').length
   const unavailable = props.factors.filter((factor) => factor.status === 'unavailable')
+  const mirror = props.factors.filter((factor) => factor.sourceUsage === 'mirror_learning').length +
+    (props.macroRegimeEvidence?.sourceUsage === 'mirror_learning' ? 1 : 0)
+  const disabled = props.factors.filter((factor) => factor.sourceUsage === 'production_disabled').length +
+    (props.macroRegimeEvidence?.sourceUsage === 'production_disabled' ? 1 : 0)
   const configuredRatio = props.factors.length > 0
     ? Math.round(((live + derived) / props.factors.length) * 100)
     : 0
@@ -2473,7 +2857,8 @@ function SourceAuditPanel(props: {
       <div className="source-audit-grid">
         <MetricCard label="实时源" value={`${live}`} />
         <MetricCard label="派生/回测" value={`${derived}`} />
-        <MetricCard label="未配置/不可用" value={`${unavailable.length}`} />
+        <MetricCard label="离线校准" value={`${mirror}`} />
+        <MetricCard label="生产禁用/不可用" value={`${disabled + unavailable.length}`} />
         <MetricCard
           label="情绪源"
           value={`${getMarketStatusLabel(props.sentiment.news.status)} / ${getMarketStatusLabel(props.sentiment.blogger.status)}`}
@@ -2485,9 +2870,9 @@ function SourceAuditPanel(props: {
           {unavailable.length > 5 ? ` 等 ${unavailable.length} 项` : ''}。这些不会放大强买点，只按中性或降权处理。
         </p>
       ) : (
-        <p>当前核心因子均已有实时或派生值，可作为综合观察依据；仍需注意行情延迟和外部源噪声。</p>
+        <p>当前核心因子已有实时或派生值，只能作为宏观背景观察依据；实时买卖仍需价格、回测、事件风险和硬门槛共同确认。</p>
       )}
-      <details className="pending-source-list" open={unavailable.length > 0}>
+      <details className="pending-source-list">
         <summary>逐个接入状态与配置入口</summary>
         <div>
           {props.factors
@@ -2657,6 +3042,78 @@ function getMarketStatusLabel(status: MarketFactorStatus) {
   }
 
   return labels[status]
+}
+
+function sourceUsageFromStatus(status: MarketFactorStatus): MarketFactorSourceUsage {
+  if (status === 'live') {
+    return 'production_realtime'
+  }
+  if (status === 'derived') {
+    return 'derived'
+  }
+  return 'unknown'
+}
+
+function getSourceUsageLabel(sourceUsage: MarketFactorSourceUsage) {
+  const labels: Record<MarketFactorSourceUsage, string> = {
+    production_realtime: '实时生产源',
+    mirror_learning: '离线校准参考',
+    production_disabled: '生产禁用',
+    derived: '本地推演',
+    unknown: '来源待确认',
+  }
+  return labels[sourceUsage]
+}
+
+function getMacroRegimeStatusLabel(status: MacroRegimeStatus) {
+  const labels: Record<MacroRegimeStatus, string> = {
+    supportive: '中期背景支持',
+    neutral: '宏观中性',
+    pressure: '买点降级',
+    conflicted: '方向冲突',
+    unknown: '证据不足',
+  }
+  return labels[status]
+}
+
+function getInflationPhaseLabel(phase: MacroRegimeEvidence['inflationPhase']) {
+  const labels: Record<MacroRegimeEvidence['inflationPhase'], string> = {
+    accelerating: '再加速',
+    sticky: '粘性',
+    cooling: '降温',
+    unknown: '未知',
+  }
+  return labels[phase]
+}
+
+function getRealRateTrendLabel(trend: MacroRegimeEvidence['realRateTrend']) {
+  const labels: Record<MacroRegimeEvidence['realRateTrend'], string> = {
+    rising: '上行',
+    falling: '回落',
+    flat: '横盘',
+    unknown: '未知',
+  }
+  return labels[trend]
+}
+
+function getUsdCnyAlignmentLabel(alignment: MacroRegimeEvidence['usdCnyAlignment']) {
+  const labels: Record<MacroRegimeEvidence['usdCnyAlignment'], string> = {
+    cny_gold_support: '支撑人民币金',
+    cny_gold_pressure: '压制人民币金',
+    neutral: '中性',
+    unknown: '未知',
+  }
+  return labels[alignment]
+}
+
+function getCmeQualityLabel(quality: MacroRegimeEvidence['cmeBreakoutQuality']) {
+  const labels: Record<MacroRegimeEvidence['cmeBreakoutQuality'], string> = {
+    confirmed: '确认',
+    not_confirmed: '未确认',
+    unavailable: '不可用',
+    unknown: '未知',
+  }
+  return labels[quality]
 }
 
 function getFactorEducation(factor: MarketFactor) {
@@ -3078,6 +3535,160 @@ function getQualityTone(level: DataQualityInfo['level'] | undefined) {
   return 'flat'
 }
 
+function ChartRangeScrubber(props: {
+  info: ChartScrubberInfo
+  onChange: (range: ChartVisibleRange) => void
+  embedded?: boolean
+}) {
+  const trackRef = useRef<HTMLDivElement | null>(null)
+  const dragModeRef = useRef<'start' | 'end' | 'window' | null>(null)
+  const dragStartRef = useRef<{
+    pointerPercent: number
+    startPercent: number
+    endPercent: number
+  } | null>(null)
+
+  const commitRange = useCallback((startPercent: number, endPercent: number) => {
+    const range = buildRangeFromScrubberInfo(props.info, startPercent, endPercent)
+    if (range) {
+      props.onChange(range)
+    }
+  }, [props])
+
+  const percentFromEvent = (event: ReactPointerEvent<HTMLElement>) => {
+    const rect = trackRef.current?.getBoundingClientRect()
+    if (!rect || rect.width <= 0) {
+      return null
+    }
+    return Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100))
+  }
+
+  const beginDrag = (
+    event: ReactPointerEvent<HTMLElement>,
+    mode: 'start' | 'end' | 'window',
+  ) => {
+    if (props.info.disabled) {
+      return
+    }
+    const pointerPercent = percentFromEvent(event)
+    if (pointerPercent === null) {
+      return
+    }
+    dragModeRef.current = mode
+    dragStartRef.current = {
+      pointerPercent,
+      startPercent: props.info.startPercent,
+      endPercent: props.info.endPercent,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    event.preventDefault()
+  }
+
+  const moveDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const mode = dragModeRef.current
+    const start = dragStartRef.current
+    if (!mode || !start) {
+      return
+    }
+    const pointerPercent = percentFromEvent(event)
+    if (pointerPercent === null) {
+      return
+    }
+    const delta = pointerPercent - start.pointerPercent
+    if (mode === 'start') {
+      commitRange(Math.min(start.endPercent - 1, pointerPercent), start.endPercent)
+      return
+    }
+    if (mode === 'end') {
+      commitRange(start.startPercent, Math.max(start.startPercent + 1, pointerPercent))
+      return
+    }
+
+    const width = start.endPercent - start.startPercent
+    const nextStart = Math.max(0, Math.min(100 - width, start.startPercent + delta))
+    commitRange(nextStart, nextStart + width)
+  }
+
+  const endDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    dragModeRef.current = null
+    dragStartRef.current = null
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }
+
+  return (
+    <div className={props.embedded ? 'chart-range-scrubber chart-range-scrubber--embedded' : 'chart-range-scrubber'}>
+      <div>
+        <strong>时间轴</strong>
+        <span>{props.info.visibleLabel}</span>
+      </div>
+      <div
+        aria-disabled={props.info.disabled}
+        aria-label="直接拖动选择图表时间范围"
+        className="chart-range-mini-timeline"
+        onPointerCancel={endDrag}
+        onPointerLeave={moveDrag}
+        onPointerMove={moveDrag}
+        onPointerUp={endDrag}
+        ref={trackRef}
+        role="group"
+      >
+        <div className="chart-range-mini-timeline__ticks">
+          <span>{props.info.startLabel}</span>
+          <span>{props.info.endLabel}</span>
+        </div>
+        <div className="chart-range-mini-timeline__track">
+          <button
+            aria-label="拖动选区"
+            className="chart-range-mini-timeline__selection"
+            disabled={props.info.disabled}
+            onPointerDown={(event) => beginDrag(event, 'window')}
+            style={{
+              left: `${props.info.startPercent}%`,
+              width: `${Math.max(1, props.info.endPercent - props.info.startPercent)}%`,
+            }}
+            type="button"
+          />
+          <button
+            aria-label="拖动左侧起点"
+            className="chart-range-mini-timeline__handle chart-range-mini-timeline__handle--start"
+            disabled={props.info.disabled}
+            onPointerDown={(event) => beginDrag(event, 'start')}
+            style={{ left: `${props.info.startPercent}%` }}
+            type="button"
+          />
+          <button
+            aria-label="拖动右侧终点"
+            className="chart-range-mini-timeline__handle chart-range-mini-timeline__handle--end"
+            disabled={props.info.disabled}
+            onPointerDown={(event) => beginDrag(event, 'end')}
+            style={{ left: `${props.info.endPercent}%` }}
+            type="button"
+          />
+        </div>
+      </div>
+      <small>{props.info.selectedStartLabel}</small>
+      <small>{props.info.selectedEndLabel}</small>
+    </div>
+  )
+}
+
+function TradingSessionBanner(props: {
+  session: QuotePayload['marketReference']['tradingSession'] | null
+}) {
+  if (!props.session || props.session.status !== 'closed') {
+    return null
+  }
+
+  return (
+    <div className="trading-session-banner" role="status">
+      <strong>已休市 / 非主交易时段</strong>
+      <span>{props.session.note || '当前报价可能暂停更新，图表横线代表停更，不等于真实横盘。'}</span>
+    </div>
+  )
+}
+
 function IntradayChartPanel(props: {
   indicators: Indicator[]
   priceData: LineDatum[]
@@ -3089,7 +3700,12 @@ function IntradayChartPanel(props: {
   signal: ChartSignal
   patternSignals: PatternSignal[]
   isLoading: boolean
+  tradingSession: QuotePayload['marketReference']['tradingSession'] | null
   timeframeLabel: string
+  visibleRange: ChartVisibleRange | null
+  onVisibleRangeChange: (range: ChartVisibleRange) => void
+  rangeScrubberInfo: ChartScrubberInfo
+  onRangeScrubberChange: (range: ChartVisibleRange) => void
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [hover, setHover] = useState<IntradayHover | null>(null)
@@ -3121,6 +3737,13 @@ function IntradayChartPanel(props: {
 
     const container = containerRef.current
     const chart = createChart(container, chartOptions(container))
+    const userInteractedRef = { current: false }
+    const markUserInteracted = () => {
+      userInteractedRef.current = true
+    }
+    container.addEventListener('pointerdown', markUserInteracted)
+    container.addEventListener('wheel', markUserInteracted, { passive: true })
+    container.addEventListener('touchstart', markUserInteracted, { passive: true })
     const priceSeries = chart.addSeries(LineSeries, {
       color: '#d71920',
       lineWidth: 2,
@@ -3185,7 +3808,17 @@ function IntradayChartPanel(props: {
     bollMiddleSeries?.setData(bollData.middle)
     bollLowerSeries?.setData(bollData.lower)
 
-    chart.timeScale().fitContent()
+    applyChartVisibleRange(chart, props.visibleRange)
+    const handleVisibleRangeChange = (range: { from: Time; to: Time } | null) => {
+      if (!userInteractedRef.current || !range) {
+        return
+      }
+      const normalized = normalizeVisibleRange(range)
+      if (normalized) {
+        props.onVisibleRangeChange(normalized)
+      }
+    }
+    chart.timeScale().subscribeVisibleTimeRangeChange(handleVisibleRangeChange)
     chart.subscribeCrosshairMove((param: MouseEventParams<Time>) => {
       if (!param.time || !param.seriesData) {
         setHover(null)
@@ -3221,6 +3854,10 @@ function IntradayChartPanel(props: {
     observer.observe(container)
 
     return () => {
+      chart.timeScale().unsubscribeVisibleTimeRangeChange(handleVisibleRangeChange)
+      container.removeEventListener('pointerdown', markUserInteracted)
+      container.removeEventListener('wheel', markUserInteracted)
+      container.removeEventListener('touchstart', markUserInteracted)
       observer.disconnect()
       chart.remove()
     }
@@ -3233,6 +3870,8 @@ function IntradayChartPanel(props: {
     props.latestPrice,
     props.latestReference,
     props.patternSignals,
+    props.visibleRange,
+    props.onVisibleRangeChange,
     showBoll,
     showMa,
     ma5Data,
@@ -3252,6 +3891,7 @@ function IntradayChartPanel(props: {
       />
       <div className="data-window">
         <DataItem label="周期" value={`${props.timeframeLabel}分时`} />
+        <DataItem label="状态" value={formatTradingSessionStatus(props.tradingSession)} tone={props.tradingSession?.status === 'closed' ? 'down' : undefined} />
         <DataItem label="点数" value={`${props.priceData.length}`} />
         <DataItem
           label="时间"
@@ -3288,6 +3928,11 @@ function IntradayChartPanel(props: {
       ) : (
         <div className="lw-chart" ref={containerRef} />
       )}
+      <ChartRangeScrubber
+        embedded
+        info={props.rangeScrubberInfo}
+        onChange={props.onRangeScrubberChange}
+      />
       <IndicatorPanel
         boll={bollData}
         macdValue={showMacd ? macdValue : null}
@@ -3308,7 +3953,12 @@ function CandlestickChartPanel(props: {
   signal: ChartSignal
   patternSignals: PatternSignal[]
   isLoading: boolean
+  tradingSession: QuotePayload['marketReference']['tradingSession'] | null
   timeframeLabel: string
+  visibleRange: ChartVisibleRange | null
+  onVisibleRangeChange: (range: ChartVisibleRange) => void
+  rangeScrubberInfo: ChartScrubberInfo
+  onRangeScrubberChange: (range: ChartVisibleRange) => void
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [hover, setHover] = useState<CandleHover | null>(null)
@@ -3343,6 +3993,13 @@ function CandlestickChartPanel(props: {
 
     const container = containerRef.current
     const chart = createChart(container, chartOptions(container))
+    const userInteractedRef = { current: false }
+    const markUserInteracted = () => {
+      userInteractedRef.current = true
+    }
+    container.addEventListener('pointerdown', markUserInteracted)
+    container.addEventListener('wheel', markUserInteracted, { passive: true })
+    container.addEventListener('touchstart', markUserInteracted, { passive: true })
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#d71920',
       downColor: '#078466',
@@ -3404,7 +4061,17 @@ function CandlestickChartPanel(props: {
     bollUpperSeries?.setData(bollData.upper)
     bollMiddleSeries?.setData(bollData.middle)
     bollLowerSeries?.setData(bollData.lower)
-    chart.timeScale().fitContent()
+    applyChartVisibleRange(chart, props.visibleRange)
+    const handleVisibleRangeChange = (range: { from: Time; to: Time } | null) => {
+      if (!userInteractedRef.current || !range) {
+        return
+      }
+      const normalized = normalizeVisibleRange(range)
+      if (normalized) {
+        props.onVisibleRangeChange(normalized)
+      }
+    }
+    chart.timeScale().subscribeVisibleTimeRangeChange(handleVisibleRangeChange)
     chart.subscribeCrosshairMove((param: MouseEventParams<Time>) => {
       if (!param.time || !param.seriesData) {
         setHover(null)
@@ -3463,6 +4130,10 @@ function CandlestickChartPanel(props: {
     observer.observe(container)
 
     return () => {
+      chart.timeScale().unsubscribeVisibleTimeRangeChange(handleVisibleRangeChange)
+      container.removeEventListener('pointerdown', markUserInteracted)
+      container.removeEventListener('wheel', markUserInteracted)
+      container.removeEventListener('touchstart', markUserInteracted)
       observer.disconnect()
       chart.remove()
     }
@@ -3476,6 +4147,8 @@ function CandlestickChartPanel(props: {
     markers,
     props.candleData,
     props.patternSignals,
+    props.visibleRange,
+    props.onVisibleRangeChange,
     showBoll,
     showMa,
   ])
@@ -3492,6 +4165,7 @@ function CandlestickChartPanel(props: {
       />
       <div className="data-window data-window--ohlc">
         <DataItem label="周期" value={props.timeframeLabel} />
+        <DataItem label="状态" value={formatTradingSessionStatus(props.tradingSession)} tone={props.tradingSession?.status === 'closed' ? 'down' : undefined} />
         <DataItem label="根数" value={`${props.candleData.length}`} />
         <DataItem label="时间" value={hover?.timeLabel ?? (latestCandle ? formatTimestamp(latestCandle.time) : '--')} />
         <DataItem label="开" value={formatMaybePrice(hover?.open ?? latestCandle?.open ?? props.latestPrice)} />
@@ -3509,6 +4183,11 @@ function CandlestickChartPanel(props: {
       ) : (
         <div className="lw-chart" ref={containerRef} />
       )}
+      <ChartRangeScrubber
+        embedded
+        info={props.rangeScrubberInfo}
+        onChange={props.onRangeScrubberChange}
+      />
       <IndicatorPanel
         boll={bollData}
         macdValue={showMacd ? macdValue : null}
@@ -3527,6 +4206,84 @@ function DataItem(props: { label: string; value: string; tone?: 'up' | 'down' })
       <strong className={props.tone ?? ''}>{props.value}</strong>
     </span>
   )
+}
+
+function formatTradingSessionStatus(session: QuotePayload['marketReference']['tradingSession'] | null) {
+  if (!session) {
+    return '未知'
+  }
+  if (session.status === 'trading') {
+    return '交易中'
+  }
+  if (session.status === 'closed') {
+    return '已休市'
+  }
+  return '未知'
+}
+
+function buildChartTradingSession(
+  source: ChartSourceId,
+  baseSession: TradingSession | null,
+  now: number,
+): TradingSession | null {
+  if (source === 'au9999' || source === 'autd') {
+    return buildSgeTradingSession(now, CHART_SOURCE_LABELS[source].label)
+  }
+  if (source === 'london') {
+    return buildGlobalGoldTradingSession(now)
+  }
+  if (source === 'consensus') {
+    const sgeSession = buildSgeTradingSession(now, CHART_SOURCE_LABELS.consensus.label)
+    if (sgeSession.isTradingTime) {
+      return {
+        ...sgeSession,
+        note: '多源校准价包含 AU9999/Au(T+D) 锚点，当前按上金所活跃时段展示。',
+      }
+    }
+  }
+  return baseSession
+}
+
+function buildSgeTradingSession(now: number, label: string): TradingSession {
+  const chinaTime = new Date(new Date(now).toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }))
+  const day = chinaTime.getDay()
+  const minutes = chinaTime.getHours() * 60 + chinaTime.getMinutes()
+  const inDaySession = day >= 1 && day <= 5 && (
+    (minutes >= 9 * 60 && minutes <= 11 * 60 + 30) ||
+    (minutes >= 13 * 60 + 30 && minutes <= 15 * 60 + 30)
+  )
+  const inNightSession = (
+    (day >= 1 && day <= 5 && minutes >= 20 * 60) ||
+    (day >= 2 && day <= 6 && minutes <= 2 * 60 + 30)
+  )
+  const isTradingTime = inDaySession || inNightSession
+
+  return {
+    isTradingTime,
+    status: isTradingTime ? 'trading' : 'closed',
+    note: isTradingTime
+      ? `${label} 当前处于上金所日盘/夜盘交易时段。`
+      : `${label} 当前不在上金所日盘/夜盘主要交易时段，报价可能暂停更新。`,
+  }
+}
+
+function buildGlobalGoldTradingSession(now: number): TradingSession {
+  const date = new Date(now)
+  const day = date.getUTCDay()
+  const minutes = date.getUTCHours() * 60 + date.getUTCMinutes()
+  const isTradingTime = !(
+    day === 6 ||
+    (day === 0 && minutes < 22 * 60) ||
+    (day === 5 && minutes >= 22 * 60)
+  )
+
+  return {
+    isTradingTime,
+    status: isTradingTime ? 'trading' : 'closed',
+    note: isTradingTime
+      ? '伦敦金/国际金按全球黄金 24x5 交易时段判断，当前通常仍有报价。'
+      : '伦敦金/国际金当前处于周末或全球主要休市窗口，报价可能暂停更新。',
+  }
 }
 
 function IndicatorPanel(props: {
@@ -3592,12 +4349,19 @@ function ChartSignalStrip(props: {
       <div className="chart-probability-card">
         <span>{props.prediction.label}</span>
         <strong>
-          TP1先达 {formatProbability(props.prediction.upProbability)}
-          <b> / </b>
-          止损先达 {formatProbability(props.prediction.downProbability)}
+          {props.prediction.showProbability ? (
+            <>
+              TP1先达 {formatProbability(props.prediction.upProbability)}
+              <b> / </b>
+              止损先达 {formatProbability(props.prediction.downProbability)}
+            </>
+          ) : (
+            props.prediction.displayText
+          )}
         </strong>
         <small>
-          置信 {formatProbability(props.prediction.confidence)} · {props.prediction.basis}
+          {props.prediction.showProbability ? `置信 ${formatProbability(props.prediction.confidence)} · ` : ''}
+          {props.prediction.basis}
         </small>
       </div>
       <div className="chart-forecast-card">
@@ -3628,7 +4392,26 @@ function ChartSignalStrip(props: {
 
 function PatternSignalPanel(props: { patterns: PatternSignal[] }) {
   if (props.patterns.length < 1) {
-    return null
+    return (
+      <div className="pattern-signal-panel">
+        <article className="pattern-card pattern-card--neutral">
+          <header>
+            <strong>形态观察</strong>
+            <span>暂无确认形态 · 等待结构</span>
+          </header>
+          <p>当前窗口未识别到足够稳定的双顶/双底、吞没、锤子线等形态，不隐藏卡片，避免误以为模块丢失。</p>
+          <div>
+            <small>状态 观察</small>
+            <small>确认 --</small>
+            <small>关键 --</small>
+            <small>失效 --</small>
+            <small>情景目标 --</small>
+            <small>冷却 --</small>
+          </div>
+          <b>没有形态不是买卖信号，只代表当前 K 线结构不足以形成可解释形态；继续以关键价位、概率和硬门槛复核为主。</b>
+        </article>
+      </div>
+    )
   }
 
   return (
@@ -3660,6 +4443,14 @@ function PatternSignalPanel(props: { patterns: PatternSignal[] }) {
       ))}
     </div>
   )
+}
+
+function mergePatternSignals(primary: PatternSignal[], fallback: PatternSignal[]) {
+  const merged = new Map<string, PatternSignal>()
+  for (const pattern of [...primary, ...fallback]) {
+    merged.set(pattern.id, pattern)
+  }
+  return [...merged.values()]
 }
 
 function patternStatusLabel(pattern: PatternSignal) {
@@ -3696,14 +4487,15 @@ function ChartInsightDeck(props: {
   const externalMonitor = props.monitor?.externalModel ?? null
   const bestBucket = externalMonitor?.bestBuckets[0] ?? null
   const weakBucket = externalMonitor?.weakBuckets[0] ?? null
-  const action = props.signal?.tradePlan?.actionLabel ?? props.transparency.verdict
+  const action = props.signal?.finalDecision?.actionLabel ?? props.signal?.tradePlan?.actionLabel ?? props.transparency.verdict
+  const decisionView = props.signal?.decisionView ?? null
 
   return (
     <section className="chart-insight-deck" aria-label="可视化军师摘要">
       <article className="chart-insight-card chart-insight-card--decision">
         <span>小白操作翻译</span>
         <strong>{action}</strong>
-        <small>{props.signal?.tradePlan?.positionSuggestion ?? '先看多源价差、回测样本和事件风险，未过硬门槛不追价。'}</small>
+        <small>{decisionView?.beginnerInstruction ?? props.signal?.tradePlan?.positionSuggestion ?? '先看多源价差、回测样本和事件风险，未过硬门槛不追价。'}</small>
       </article>
       <article className="chart-insight-card">
         <span>外部模型军师</span>
@@ -3716,9 +4508,11 @@ function ChartInsightDeck(props: {
       </article>
       <article className="chart-insight-card">
         <span>同类胜率/回测</span>
-        <strong>{props.monitor?.winRate === null || props.monitor?.winRate === undefined ? '--' : formatNullablePercent(props.monitor.winRate)}</strong>
+        <strong>{decisionView?.calibrationStatus.canShowNumericProbability ? formatMaybeProbability(decisionView.probabilityDisplay.value === null ? null : decisionView.probabilityDisplay.value * 100) : '样本不足'}</strong>
         <small>
-          {bestBucket
+          {decisionView
+            ? decisionView.calibrationStatus.reason
+            : bestBucket
             ? `强桶：${bestBucket.label}，PF ${formatNullableRatio(bestBucket.profitFactor)}。`
             : weakBucket
               ? `弱桶：${weakBucket.label}，模型自动降权。`
@@ -3895,7 +4689,7 @@ function buildSignalTransparency(
         : '等待确认'
 
   return {
-    probability: prediction.upProbability,
+    probability: prediction.showProbability ? prediction.upProbability : 0,
     winRate: monitor?.winRate ?? signal?.marketContext?.backtest.horizons[0]?.winRate ?? null,
     calibrationConfidence,
     reliability,
@@ -3923,13 +4717,27 @@ function buildChartPrediction(
   signal: OpportunityInfo | null,
   monitor: BacktestMonitor | null,
 ): ChartPrediction {
+  const decisionView = signal?.decisionView ?? null
   if (signal?.canonicalForecast) {
+    const probabilityDisplay = decisionView?.probabilityDisplay ?? null
+    const calibratedProbability = probabilityDisplay?.mode === 'calibrated' &&
+      probabilityDisplay.value !== null
+      ? probabilityDisplay.value
+      : null
+    const showProbability = calibratedProbability !== null
+    const probability = showProbability
+      ? Math.round(calibratedProbability * 100)
+      : Math.round(signal.canonicalForecast.probability.up * 100)
     return {
-      upProbability: Math.round(signal.canonicalForecast.probability.up * 100),
-      downProbability: Math.round(signal.canonicalForecast.probability.down * 100),
+      upProbability: probability,
+      downProbability: Math.max(0, 100 - probability),
       confidence: signal.canonicalForecast.probability.confidence,
-      label: '统一预测',
-      basis: signal.canonicalForecast.successRate.label,
+      label: showProbability ? '校准概率' : probabilityDisplay?.label ?? '概率隐藏',
+      basis: showProbability
+        ? signal.canonicalForecast.successRate.label
+        : probabilityDisplay?.reason ?? '样本或硬门槛未达标，不展示精确概率。',
+      showProbability,
+      displayText: showProbability ? formatProbability(probability) : probabilityDisplay?.label ?? '样本不足',
     }
   }
   const normalizedScore = normalizeScoreNumber(signal?.score) ?? 50
@@ -3978,6 +4786,8 @@ function buildChartPrediction(
     basis: monitor?.evaluatedSamples
       ? '信号分、专家团、宏观因子、估值水位、选择性Walk-forward'
       : '信号分、专家团、宏观因子、估值水位',
+    showProbability: false,
+    displayText: '未校准倾向',
   }
 }
 
@@ -4055,6 +4865,35 @@ function buildChartForecast(
 }
 
 function buildChartSignal(signal: OpportunityInfo | null, prediction: ChartPrediction): ChartSignal {
+  const decisionView = signal?.decisionView ?? null
+  if (decisionView) {
+    if (decisionView.action === 'avoid' || decisionView.displayGrade === 'blocked') {
+      return {
+        tone: 'risk',
+        label: '只观察 · 不开新仓',
+        detail: decisionView.blockerSummary,
+      }
+    }
+    if (decisionView.action === 'wait' || decisionView.displayGrade === 'low') {
+      return {
+        tone: 'wait',
+        label: '等待确认',
+        detail: decisionView.primaryInstruction,
+      }
+    }
+    if (decisionView.canAct) {
+      return {
+        tone: 'buy',
+        label: '强复核 · 等触发执行',
+        detail: `触发 ${formatMaybePrice(decisionView.triggerPrice)}，止损 ${formatMaybePrice(decisionView.stopLoss)}，TP1 ${formatMaybePrice(decisionView.takeProfit1)}。`,
+      }
+    }
+    return {
+      tone: 'watch',
+      label: decisionView.action === 'confirm_then_enter' ? '候选买点 · 等触发' : '观察信号 · 不追价',
+      detail: decisionView.primaryInstruction,
+    }
+  }
   const consensusAction = signal?.expertConsensus?.action
   const score = normalizeScoreNumber(signal?.score)
 
@@ -4062,7 +4901,9 @@ function buildChartSignal(signal: OpportunityInfo | null, prediction: ChartPredi
     return {
       tone: 'risk',
       label: '卖点/风险观察',
-      detail: `TP1先达倾向 ${formatProbability(prediction.upProbability)}，控制仓位或等待回落确认。`,
+      detail: prediction.showProbability
+        ? `TP1先达倾向 ${formatProbability(prediction.upProbability)}，控制仓位或等待回落确认。`
+        : `${prediction.displayText}，控制仓位或等待回落确认。`,
     }
   }
 
@@ -4070,7 +4911,9 @@ function buildChartSignal(signal: OpportunityInfo | null, prediction: ChartPredi
     return {
       tone: 'buy',
       label: signal?.level === 'strong' ? '强复核 · 等触发执行' : '观察增强',
-      detail: `TP1先达概率 ${formatProbability(prediction.upProbability)}，仍需触发价、分批和止损纪律。`,
+      detail: prediction.showProbability
+        ? `TP1先达概率 ${formatProbability(prediction.upProbability)}，仍需触发价、分批和止损纪律。`
+        : `${prediction.displayText}，仍需触发价、分批和止损纪律。`,
     }
   }
 
@@ -4078,14 +4921,18 @@ function buildChartSignal(signal: OpportunityInfo | null, prediction: ChartPredi
     return {
       tone: 'watch',
       label: '观察信号 · 不追价',
-      detail: `TP1先达倾向 ${formatProbability(prediction.upProbability)}，等待更多数据源共振。`,
+      detail: prediction.showProbability
+        ? `TP1先达倾向 ${formatProbability(prediction.upProbability)}，等待更多数据源共振。`
+        : `${prediction.displayText}，等待更多数据源共振。`,
     }
   }
 
   return {
     tone: 'wait',
     label: '等待信号',
-    detail: `模型倾向 ${formatProbability(prediction.upProbability)}，当前更适合观察。`,
+    detail: prediction.showProbability
+      ? `模型倾向 ${formatProbability(prediction.upProbability)}，当前更适合观察。`
+      : `${prediction.displayText}，当前更适合观察。`,
   }
 }
 
@@ -4383,11 +5230,14 @@ function chartSignalColor(tone: ChartSignal['tone']) {
 function buildRenderableHistory(history: HistoryPoint[], quote: QuotePayload | null) {
   const points = [...history]
   if (quote) {
+    const referenceFields = buildLatestReferenceHistoryFields(quote)
     points.push({
       price: quote.price,
       timestamp: quote.fetchedAt ?? quote.updatedAt,
       referenceAnchorPrice: quote.marketReference.calibration.anchorPrice,
       referenceAu9999Price: quote.marketReference.au9999?.latestPrice ?? null,
+      referenceAutdPrice: quote.marketReference.autd?.latestPrice ?? null,
+      ...referenceFields,
     })
   }
 
@@ -4419,6 +5269,270 @@ function buildRenderableHistory(history: HistoryPoint[], quote: QuotePayload | n
   ]
 }
 
+function buildChartSourceOptions(
+  quote: QuotePayload | null,
+  history: HistoryPoint[],
+): ChartSourceOption[] {
+  const hasHistoryValue = (selector: (point: HistoryPoint) => number | null | undefined) => {
+    return history.some((point) => {
+      const value = selector(point)
+      return typeof value === 'number' && Number.isFinite(value) && value > 0
+    })
+  }
+  const domesticReferences = quote?.marketReference.domesticReferences ?? []
+  const zheshang = findReferenceQuote(domesticReferences, isZheshangReference)
+  const domesticGold = findReferenceQuote(domesticReferences, (item) => item.symbol === 'JO_9753')
+  const londonFactor = quote?.marketContext?.factors.spotGoldUsd ?? null
+
+  return [
+    chartSourceOption('icbc', true, quote?.price ?? null, '主行情有本地连续历史，可直接做分时/K线和技术指标。'),
+    chartSourceOption(
+      'consensus',
+      hasHistoryValue((point) => point.referenceAnchorPrice),
+      quote?.marketReference.consensusPrice ?? quote?.marketReference.calibration.anchorPrice ?? null,
+      '多源校准价来自 AU9999/Au(T+D)/银行参考的锚点；仅在历史点含锚点时展示。',
+    ),
+    chartSourceOption(
+      'au9999',
+      hasHistoryValue((point) => point.referenceAu9999Price),
+      quote?.marketReference.au9999?.latestPrice ?? null,
+      'AU9999 需要上金所锚点进入历史点后才能形成分时/K线。',
+    ),
+    chartSourceOption(
+      'autd',
+      hasHistoryValue((point) => point.referenceAutdPrice),
+      quote?.marketReference.autd?.latestPrice ?? null,
+      'Au(T+D) 需要上金所锚点进入历史点后才能形成分时/K线。',
+    ),
+    chartSourceOption(
+      'zheshang',
+      hasHistoryValue((point) => point.referenceZheshangPrice),
+      zheshang?.latestPrice ?? null,
+      '浙商积存金来自第三方镜像参考源；有本地历史点后可切换分时/K线。',
+    ),
+    chartSourceOption(
+      'domesticGold',
+      hasHistoryValue((point) => point.referenceDomesticGoldPrice),
+      domesticGold?.latestPrice ?? null,
+      '金投网国内黄金参考价进入历史点后，可作为国内现货参考序列观察。',
+    ),
+    chartSourceOption(
+      'london',
+      hasHistoryValue((point) => point.referenceInternationalGoldPrice),
+      londonFactor?.value ?? null,
+      '国际金使用已接入的 GC=F/金投网国际金参考价，仅用于美元/盎司参考序列。',
+    ),
+  ]
+}
+
+function chartSourceOption(
+  id: ChartSourceId,
+  available: boolean,
+  latestPrice: number | null | undefined,
+  reason: string,
+): ChartSourceOption {
+  const meta = CHART_SOURCE_LABELS[id]
+  return {
+    id,
+    label: meta.label,
+    shortLabel: meta.shortLabel,
+    unit: meta.unit,
+    available,
+    latestPrice: typeof latestPrice === 'number' && Number.isFinite(latestPrice) ? latestPrice : null,
+    reason,
+  }
+}
+
+function projectHistoryForChartSource(history: HistoryPoint[], source: ChartSourceId): ChartHistoryProjection {
+  const exactHistory = history
+    .map((point): HistoryPoint | null => {
+      const value = selectHistoryChartValue(point, source)
+      if (value === null) {
+        return null
+      }
+      return {
+        ...point,
+        price: value,
+        referenceAnchorPrice: source === 'icbc' ? point.referenceAnchorPrice ?? null : null,
+        referenceAu9999Price: source === 'icbc' ? point.referenceAu9999Price ?? null : null,
+        referenceAutdPrice: source === 'icbc' ? point.referenceAutdPrice ?? null : null,
+        referenceZheshangPrice: source === 'icbc' ? point.referenceZheshangPrice ?? null : null,
+        referenceDomesticGoldPrice: source === 'icbc' ? point.referenceDomesticGoldPrice ?? null : null,
+        referenceInternationalGoldPrice: source === 'icbc' ? point.referenceInternationalGoldPrice ?? null : null,
+      }
+    })
+    .filter((point): point is HistoryPoint => point !== null)
+
+  const exactPointCount = exactHistory.length
+  const totalPointCount = history.length
+  const coverage = totalPointCount > 0 ? exactPointCount / totalPointCount : 0
+
+  if (source === 'icbc' || shouldUseNativeChartHistory(exactPointCount, totalPointCount)) {
+    return {
+      history: exactHistory,
+      mode: 'native',
+      exactPointCount,
+      totalPointCount,
+      coverage,
+    }
+  }
+
+  const proxyHistory = buildProxyChartHistory(history, exactHistory, source)
+  return {
+    history: proxyHistory.length > exactHistory.length ? proxyHistory : exactHistory,
+    mode: proxyHistory.length > exactHistory.length ? 'proxy' : 'native',
+    exactPointCount,
+    totalPointCount,
+    coverage,
+  }
+}
+
+function shouldUseNativeChartHistory(exactPointCount: number, totalPointCount: number) {
+  if (totalPointCount <= 30) {
+    return exactPointCount >= 2
+  }
+  return totalPointCount > 0 && exactPointCount / totalPointCount >= 0.7
+}
+
+function buildProxyChartHistory(
+  history: HistoryPoint[],
+  exactHistory: HistoryPoint[],
+  source: ChartSourceId,
+) {
+  const latestExact = exactHistory[exactHistory.length - 1]
+  if (!latestExact) {
+    return exactHistory
+  }
+
+  const latestBase = history
+    .slice()
+    .reverse()
+    .find((point) => Number.isFinite(point.price) && point.price > 0)
+  if (!latestBase) {
+    return exactHistory
+  }
+
+  const useRatio = source === 'london'
+  const ratio = latestBase.price > 0 ? latestExact.price / latestBase.price : null
+  const spread = latestExact.price - latestBase.price
+
+  return history
+    .map((point): HistoryPoint | null => {
+      if (!Number.isFinite(point.price) || point.price <= 0) {
+        return null
+      }
+      const exactValue = selectHistoryChartValue(point, source)
+      const value = exactValue ?? (
+        useRatio && ratio !== null && Number.isFinite(ratio)
+          ? point.price * ratio
+          : point.price + spread
+      )
+      if (!Number.isFinite(value) || value <= 0) {
+        return null
+      }
+      return {
+        ...point,
+        price: value,
+        referenceAnchorPrice: null,
+        referenceAu9999Price: null,
+        referenceAutdPrice: null,
+        referenceZheshangPrice: null,
+        referenceDomesticGoldPrice: null,
+        referenceInternationalGoldPrice: null,
+      }
+    })
+    .filter((point): point is HistoryPoint => point !== null)
+}
+
+function selectHistoryChartValue(point: HistoryPoint, source: ChartSourceId) {
+  const value = source === 'icbc'
+    ? point.price
+    : source === 'consensus'
+      ? point.referenceAnchorPrice
+      : source === 'au9999'
+        ? point.referenceAu9999Price
+        : source === 'autd'
+          ? point.referenceAutdPrice
+          : source === 'zheshang'
+            ? point.referenceZheshangPrice
+            : source === 'domesticGold'
+              ? point.referenceDomesticGoldPrice
+              : source === 'london'
+                ? point.referenceInternationalGoldPrice
+                : null
+
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+}
+
+function projectQuoteForChartSource(quote: QuotePayload | null, source: ChartSourceId): QuotePayload | null {
+  if (!quote) {
+    return null
+  }
+  const value = selectQuoteChartValue(quote, source)
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return null
+  }
+  return {
+    ...quote,
+    price: value,
+    activePrice: value,
+    regularPrice: value,
+    sellPrice: value,
+  }
+}
+
+function buildLatestReferenceHistoryFields(quote: QuotePayload) {
+  const domesticReferences = quote.marketReference.domesticReferences ?? []
+  return {
+    referenceZheshangPrice: normalizeChartSourcePrice(
+      findReferenceQuote(domesticReferences, isZheshangReference)?.latestPrice ?? null,
+    ),
+    referenceDomesticGoldPrice: normalizeChartSourcePrice(
+      findReferenceQuote(domesticReferences, (item) => item.symbol === 'JO_9753')?.latestPrice ?? null,
+    ),
+    referenceInternationalGoldPrice: normalizeChartSourcePrice(
+      quote.marketContext?.factors.spotGoldUsd.value ?? null,
+    ),
+  }
+}
+
+function selectQuoteChartValue(quote: QuotePayload, source: ChartSourceId) {
+  const domesticReferences = quote.marketReference.domesticReferences ?? []
+  const value = source === 'icbc'
+    ? quote.price
+    : source === 'consensus'
+      ? quote.marketReference.consensusPrice ?? quote.marketReference.calibration.anchorPrice
+      : source === 'au9999'
+        ? quote.marketReference.au9999?.latestPrice
+        : source === 'autd'
+          ? quote.marketReference.autd?.latestPrice
+          : source === 'zheshang'
+            ? findReferenceQuote(domesticReferences, isZheshangReference)?.latestPrice
+            : source === 'domesticGold'
+              ? findReferenceQuote(domesticReferences, (item) => item.symbol === 'JO_9753')?.latestPrice
+              : source === 'london'
+                ? quote.marketContext?.factors.spotGoldUsd.value
+                : null
+
+  return normalizeChartSourcePrice(value ?? null)
+}
+
+function findReferenceQuote(
+  references: ReferenceQuote[],
+  matcher: (reference: ReferenceQuote) => boolean,
+) {
+  return references.find(matcher)
+}
+
+function isZheshangReference(reference: ReferenceQuote) {
+  const text = `${reference.symbol} ${reference.label ?? ''} ${reference.provider ?? ''}`.toLowerCase()
+  return text.includes('zheshang') || text.includes('浙商')
+}
+
+function normalizeChartSourcePrice(value: number | null) {
+  return value !== null && Number.isFinite(value) && value > 0 ? value : null
+}
+
 function selectRecentHistory(history: HistoryPoint[], windowHours: number) {
   const latest = history[history.length - 1]
   if (!latest) {
@@ -4428,52 +5542,6 @@ function selectRecentHistory(history: HistoryPoint[], windowHours: number) {
   const cutoff = new Date(latest.timestamp).getTime() - windowHours * 60 * 60 * 1000
   const sliced = history.filter((point) => new Date(point.timestamp).getTime() >= cutoff)
   return sliced.length >= 2 ? sliced : history
-}
-
-function selectLatestActiveSessionHistory(history: HistoryPoint[]) {
-  const sorted = history
-    .filter((point) => {
-      const timestamp = new Date(point.timestamp).getTime()
-      return Number.isFinite(timestamp) && Number.isFinite(point.price)
-    })
-    .sort((left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime())
-
-  const latest = sorted[sorted.length - 1]
-  if (!latest) {
-    return sorted
-  }
-
-  const latestDayKey = localDateKey(new Date(latest.timestamp))
-  const sameDay = sorted.filter((point) => localDateKey(new Date(point.timestamp)) === latestDayKey)
-  const session = sameDay.length >= 2 ? sameDay : sorted
-  return trimLeadingInactiveHistory(session)
-}
-
-function localDateKey(date: Date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-}
-
-function trimLeadingInactiveHistory(history: HistoryPoint[]) {
-  if (history.length < 3) {
-    return history
-  }
-
-  const firstChangeIndex = history.findIndex((point, index) => {
-    if (index === 0) {
-      return false
-    }
-    return hasMeaningfulPriceChange(history[index - 1]?.price ?? point.price, point.price)
-  })
-
-  if (firstChangeIndex <= 1 || history.length - firstChangeIndex < 2) {
-    return history
-  }
-
-  return history.slice(firstChangeIndex - 1)
-}
-
-function hasMeaningfulPriceChange(left: number, right: number) {
-  return Math.abs(left - right) >= 0.01
 }
 
 function buildIntradayData(history: HistoryPoint[], bucketMinutes: number, visibleBars: number) {
@@ -4516,8 +5584,7 @@ function buildIntradayData(history: HistoryPoint[], bucketMinutes: number, visib
 
 function selectVisibleLineData(data: LineDatum[], visibleBars: number) {
   const sorted = data.slice().sort((left, right) => Number(left.time) - Number(right.time))
-  const session = selectLatestTimeSession(sorted, (point) => point.value)
-  return session.slice(-visibleBars)
+  return sorted.slice(-visibleBars)
 }
 
 function bucketHistoryLine(history: HistoryPoint[], bucketMinutes: number) {
@@ -4605,42 +5672,7 @@ function mapServerCandles(candles: CandlePayload[] | undefined) {
 
 function selectVisibleCandles(candles: CandleDatum[], visibleBars: number) {
   const sorted = candles.slice().sort((left, right) => Number(left.time) - Number(right.time))
-  const session = selectLatestTimeSession(sorted, (candle) => candle.close)
-  return session.slice(-visibleBars)
-}
-
-function selectLatestTimeSession<T extends { time: UTCTimestamp }>(
-  data: T[],
-  getValue: (item: T) => number,
-) {
-  const latest = data[data.length - 1]
-  if (!latest) {
-    return data
-  }
-
-  const latestDayKey = localDateKey(new Date(Number(latest.time) * 1000))
-  const sameDay = data.filter((item) => localDateKey(new Date(Number(item.time) * 1000)) === latestDayKey)
-  const session = sameDay.length >= 2 ? sameDay : data
-  return trimLeadingInactiveTimeData(session, getValue)
-}
-
-function trimLeadingInactiveTimeData<T>(data: T[], getValue: (item: T) => number) {
-  if (data.length < 3) {
-    return data
-  }
-
-  const firstChangeIndex = data.findIndex((item, index) => {
-    if (index === 0) {
-      return false
-    }
-    return hasMeaningfulPriceChange(getValue(data[index - 1]), getValue(item))
-  })
-
-  if (firstChangeIndex <= 1 || data.length - firstChangeIndex < 2) {
-    return data
-  }
-
-  return data.slice(firstChangeIndex - 1)
+  return sorted.slice(-visibleBars)
 }
 
 function mergeLatestQuoteIntoCandles(
@@ -4825,6 +5857,162 @@ function toUtcTimestamp(value: string) {
   return Math.floor(ms / 1000) as UTCTimestamp
 }
 
+function buildChartVisibleRange(
+  windowKind: ChartTimeWindowKind,
+  data: Array<{ time: UTCTimestamp }>,
+  customRange: ChartVisibleRange | null,
+): ChartVisibleRange | null {
+  const sorted = data
+    .filter((item) => Number.isFinite(Number(item.time)))
+    .sort((left, right) => Number(left.time) - Number(right.time))
+  const first = sorted[0]?.time ?? null
+  const latest = sorted[sorted.length - 1]?.time ?? null
+  if (first === null || latest === null || latest <= first) {
+    return null
+  }
+
+  if (windowKind === 'custom') {
+    return customRange ? clampChartVisibleRange(customRange, first, latest) : null
+  }
+  if (windowKind === 'auto') {
+    return null
+  }
+
+  const from = windowKind === 'since18'
+    ? buildSinceHourTimestamp(latest, 18)
+    : ((Number(latest) - (windowKind === '6h' ? 6 : 2) * 60 * 60) as UTCTimestamp)
+
+  return clampChartVisibleRange({ from, to: latest }, first, latest)
+}
+
+function buildChartScrubberInfo(
+  data: Array<{ time: UTCTimestamp }>,
+  visibleRange: ChartVisibleRange | null,
+): ChartScrubberInfo {
+  const bounds = getChartTimeBounds(data)
+  if (!bounds) {
+    return {
+      disabled: true,
+      firstTime: null,
+      latestTime: null,
+      startPercent: 0,
+      endPercent: 100,
+      startLabel: '--',
+      endLabel: '--',
+      visibleLabel: '暂无可拖动数据',
+      selectedStartLabel: '--',
+      selectedEndLabel: '--',
+    }
+  }
+
+  const from = visibleRange?.from ?? bounds.first
+  const to = visibleRange?.to ?? bounds.latest
+  const span = Math.max(1, Number(bounds.latest) - Number(bounds.first))
+  const startPercent = Math.round(((Number(from) - Number(bounds.first)) / span) * 100)
+  const endPercent = Math.round(((Number(to) - Number(bounds.first)) / span) * 100)
+
+  return {
+    disabled: false,
+    firstTime: bounds.first,
+    latestTime: bounds.latest,
+    startPercent: Math.max(0, Math.min(99, startPercent)),
+    endPercent: Math.max(1, Math.min(100, endPercent)),
+    startLabel: formatTimestamp(bounds.first),
+    endLabel: formatTimestamp(bounds.latest),
+    visibleLabel: `${formatTimestamp(from)} → ${formatTimestamp(to)}`,
+    selectedStartLabel: formatTimestamp(from),
+    selectedEndLabel: formatTimestamp(to),
+  }
+}
+
+function buildRangeFromScrubberInfo(
+  info: ChartScrubberInfo,
+  startPercent: number,
+  endPercent: number,
+) {
+  if (info.disabled) {
+    return null
+  }
+  const bounds = {
+    first: info.firstTime,
+    latest: info.latestTime,
+  }
+  if (bounds.first === null || bounds.latest === null) {
+    return null
+  }
+  const span = Number(bounds.latest) - Number(bounds.first)
+  if (span <= 0) {
+    return null
+  }
+  const safeStart = Math.max(0, Math.min(99, startPercent))
+  const safeEnd = Math.max(safeStart + 1, Math.min(100, endPercent))
+  const from = Math.floor(Number(bounds.first) + span * (safeStart / 100)) as UTCTimestamp
+  const to = Math.floor(Number(bounds.first) + span * (safeEnd / 100)) as UTCTimestamp
+  return clampChartVisibleRange({ from, to }, bounds.first, bounds.latest)
+}
+
+function getChartTimeBounds(data: Array<{ time: UTCTimestamp }>) {
+  const sorted = data
+    .filter((item) => Number.isFinite(Number(item.time)))
+    .sort((left, right) => Number(left.time) - Number(right.time))
+  const first = sorted[0]?.time ?? null
+  const latest = sorted[sorted.length - 1]?.time ?? null
+  if (first === null || latest === null || latest <= first) {
+    return null
+  }
+  return { first, latest }
+}
+
+function buildSinceHourTimestamp(latest: UTCTimestamp, hour: number) {
+  const date = new Date(Number(latest) * 1000)
+  date.setHours(hour, 0, 0, 0)
+  if (Math.floor(date.getTime() / 1000) >= Number(latest)) {
+    date.setDate(date.getDate() - 1)
+  }
+  return Math.floor(date.getTime() / 1000) as UTCTimestamp
+}
+
+function clampChartVisibleRange(
+  range: ChartVisibleRange,
+  first: UTCTimestamp,
+  latest: UTCTimestamp,
+) {
+  const from = Math.max(Number(first), Number(range.from)) as UTCTimestamp
+  const to = Math.min(Number(latest), Number(range.to)) as UTCTimestamp
+  return to > from ? { from, to } : null
+}
+
+function applyChartVisibleRange(
+  chart: ReturnType<typeof createChart>,
+  range: ChartVisibleRange | null,
+) {
+  if (range) {
+    chart.timeScale().setVisibleRange(range)
+    return
+  }
+  chart.timeScale().fitContent()
+}
+
+function normalizeVisibleRange(range: { from: Time; to: Time }) {
+  const from = chartTimeToTimestamp(range.from)
+  const to = chartTimeToTimestamp(range.to)
+  if (from === null || to === null || to <= from) {
+    return null
+  }
+  return { from, to }
+}
+
+function chartTimeToTimestamp(value: Time): UTCTimestamp | null {
+  if (typeof value === 'number') {
+    return value as UTCTimestamp
+  }
+  if (typeof value === 'string') {
+    return toUtcTimestamp(value)
+  }
+  const ms = Date.UTC(value.year, value.month - 1, value.day)
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) as UTCTimestamp : null
+}
+
 function chartOptions(container: HTMLElement) {
   const size = getChartSize(container) ?? {
     width: Math.max(320, container.clientWidth),
@@ -4956,11 +6144,25 @@ function formatNullablePercent(value: number | null) {
   return formatSignedPercent(value)
 }
 
+function formatNullablePercentUnsigned(value: number | null) {
+  if (value === null || !Number.isFinite(value)) {
+    return '--'
+  }
+  return `${percentFormatter.format(value * 100)}%`
+}
+
 function formatNullableRatio(value: number | null) {
   if (value === null || !Number.isFinite(value)) {
     return '--'
   }
   return value.toFixed(2)
+}
+
+function estimateCompleteSamples(bucket: BacktestBucket) {
+  if (bucket.incompleteRate === null || bucket.incompleteRate === undefined || !Number.isFinite(bucket.incompleteRate)) {
+    return bucket.winRate === null ? 0 : bucket.qualifiedSamples
+  }
+  return Math.max(0, Math.round(bucket.qualifiedSamples * (1 - bucket.incompleteRate)))
 }
 
 function formatProbability(value: number) {
@@ -5018,7 +6220,23 @@ function normalizeOpportunity(quote: QuotePayload | null): OpportunityInfo | nul
     externalModelAdvisor: raw.externalModelAdvisor ?? null,
     canonicalForecast: normalizeCanonicalForecast(raw.canonicalForecast),
     decisionOverlay: normalizeDecisionOverlay(raw.decisionOverlay),
+    finalDecision: normalizeFinalDecision(raw.finalDecision),
+    decisionView: normalizeDecisionView(raw.decisionView),
   }
+}
+
+function normalizeFinalDecision(value: FinalDecision | null | undefined) {
+  if (!value || typeof value.action !== 'string' || typeof value.signalGrade !== 'string') {
+    return null
+  }
+  return value
+}
+
+function normalizeDecisionView(value: DecisionViewModel | null | undefined) {
+  if (!value || value.version !== 'decision-view-v1' || !value.probabilityDisplay) {
+    return null
+  }
+  return value
 }
 
 function normalizeCanonicalForecast(value: CanonicalForecast | null | undefined) {

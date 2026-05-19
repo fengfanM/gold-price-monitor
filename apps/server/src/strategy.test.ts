@@ -34,7 +34,7 @@ describe('opportunity strategy engine', () => {
     assert.equal(signal.reasons.some((item) => item.includes('RSI14')), true)
     assert.equal(signal.reasons.some((item) => item.includes('MACD')), true)
     assert.equal(signal.probabilityModel.primaryPrediction.horizonMinutes, 60)
-    assert.equal(signal.knowledgeRuleAudit.version, 'gold-kb-rule-pack-v2')
+    assert.equal(signal.knowledgeRuleAudit.version, 'gold-kb-rule-pack-v3')
     assert.equal(signal.finalDecision.hardGates.some((gate) => gate.id === 'kb:rule-pack'), true)
     assert.equal(signal.canonicalForecast.version, 'canonical-forecast-v1')
     assert.equal(signal.canonicalForecast.probability.source, 'probabilityModel.primaryPrediction')
@@ -107,6 +107,79 @@ describe('opportunity strategy engine', () => {
       signal.finalDecision.hardGates.some((gate) => gate.id === 'data-health' && gate.status === 'block'),
       true,
     )
+  })
+
+  it('uses finalDecision as the only display authority when hard gates block trading', () => {
+    const sourceStatus = makeSourceStatus()
+    sourceStatus.stale = true
+
+    const signal = evaluateOpportunity({
+      history: [
+        makeHistoryPoint('2026-05-16T09:56:00.000Z', 589),
+        makeHistoryPoint('2026-05-16T09:57:00.000Z', 586),
+        makeHistoryPoint('2026-05-16T09:58:00.000Z', 583),
+        makeHistoryPoint('2026-05-16T09:59:00.000Z', 580),
+      ],
+      latestQuote: makeQuote(581),
+      stats: makeStats(),
+      sourceStatus,
+      technicals: {
+        ma5: 582,
+        ma10: 584,
+        ma20: 583,
+        rsi14: 31,
+        macd: { dif: 0.8, dea: 0.6, histogram: 0.4 },
+        shortTrend: 'rising',
+      },
+    })
+
+    assert.equal(signal.finalDecision.action, 'avoid')
+    assert.equal(signal.level, 'none')
+    assert.equal(signal.triggered, false)
+    assert.equal(signal.decisionView.action, 'avoid')
+    assert.equal(signal.decisionView.canAct, false)
+    assert.equal(signal.decisionView.displayGrade, 'blocked')
+    assert.equal(signal.decisionView.probabilityDisplay.mode, 'hidden')
+    assert.equal(signal.decisionView.probabilityDisplay.value, null)
+    assert.equal(signal.decisionOverlay.upProbability, 0)
+    assert.equal(signal.decisionOverlay.downProbability, 0)
+  })
+
+  it('hides exact probability and invalid support resistance when calibration samples are insufficient', () => {
+    const signal = evaluateOpportunity({
+      history: [
+        makeHistoryPoint('2026-05-16T09:58:00.000Z', 581),
+        makeHistoryPoint('2026-05-16T09:59:00.000Z', 581),
+      ],
+      latestQuote: makeQuote(581),
+      stats: {
+        high24h: 581,
+        low24h: 581,
+        currentPrice: 581,
+        absoluteChange24h: 0,
+        percentChange24h: 0,
+        drawdownAmount24h: 0,
+        drawdownPercent24h: 0,
+        pointCount: 2,
+      },
+      sourceStatus: makeSourceStatus(),
+      technicals: {
+        ma5: 581,
+        ma10: 581,
+        ma20: 581,
+        rsi14: null,
+        macd: null,
+        shortTrend: 'flat',
+      },
+    })
+
+    assert.equal(signal.decisionView.probabilityDisplay.mode, 'hidden')
+    assert.equal(signal.decisionView.probabilityDisplay.value, null)
+    assert.equal(signal.decisionView.calibrationStatus.canShowNumericProbability, false)
+    assert.equal(signal.canonicalForecast.levels.support, null)
+    assert.equal(signal.canonicalForecast.levels.resistance, null)
+    assert.equal(signal.decisionView.levelValidation.support.status, 'invalid')
+    assert.equal(signal.decisionView.levelValidation.resistance.status, 'invalid')
   })
 
   it('downgrades opportunity when multi-source macro factors are under pressure', () => {

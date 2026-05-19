@@ -23,11 +23,15 @@ export type ProviderQuote = {
   previousClose: number | null
   unit: string
   updatedAt: string | null
+  sourceUsage?: 'production_realtime' | 'mirror_learning' | 'production_disabled' | 'derived' | 'unknown'
+  isProductionEligible?: boolean
 }
 
 export type ProviderSeriesPoint = {
   date: string
   value: number
+  sourceUsage?: ProviderQuote['sourceUsage']
+  isProductionEligible?: boolean
 }
 
 export type ProviderResult<T> = {
@@ -166,6 +170,22 @@ const CNGOLD_ITEMS = {
 } as const
 const DEFAULT_ZHESHANG_ACCUMULATION_GOLD_URL =
   'https://api.tangdouz.com/a/zsgold.php'
+const LOCAL_LIBRARY_DATA_DIR = process.env.LOCAL_MARKET_DATA_DIR
+  ?? path.resolve(process.cwd(), 'docs/reference/kline-gold-trading/library/data')
+const LOCAL_LIBRARY_DATA_DIRS = [
+  LOCAL_LIBRARY_DATA_DIR,
+  path.resolve(process.cwd(), '../../docs/reference/kline-gold-trading/library/data'),
+]
+const LOCAL_FRED_SERIES_FILES: Record<string, string[]> = {
+  CPIAUCSL: ['mirror-ivo-fred-CPIAUCSL.csv', 'mirror-github-cpiaucsl-1947-2020.csv'],
+  CPILFESL: ['mirror-ivo-fred-CPILFESL.csv'],
+  DEXCHUS: ['mirror-ivo-fred-DEXCHUS.csv', 'fred-dexchus-usdcny-cache.csv'],
+  DFII10: ['mirror-ivo-fred-DFII10.csv'],
+  DGS10: ['mirror-ivo-fred-dgs10.csv'],
+  DTWEXBGS: ['mirror-ivo-fred-DTWEXBGS.csv', 'fred-dtwexbgs-dollar-index-cache.csv'],
+  T10YIE: ['mirror-ivo-fred-T10YIE.csv'],
+  VIXCLS: ['mirror-ivo-fred-VIXCLS.csv'],
+}
 
 const COT_GOLD_DATASET_URLS = [
   process.env.COT_GOLD_NET_URL,
@@ -256,6 +276,37 @@ export async function fetchYahooQuote(
   })
 }
 
+export async function fetchInternationalGoldQuote(): Promise<ProviderResult<ProviderQuote>> {
+  const yahoo = await fetchYahooQuote('GC=F', '国际黄金期货', '美元/盎司')
+  if (yahoo.status === 'live' && yahoo.data) {
+    return yahoo
+  }
+
+  const cnGold = await fetchCnGoldQuotes()
+  const internationalGold = cnGold.data?.find((quote) => quote.symbol === CNGOLD_ITEMS.internationalGold.code)
+  if (cnGold.status === 'live' && internationalGold) {
+    return {
+      ...cnGold,
+      provider: 'cngold-international-fallback',
+      data: {
+        ...internationalGold,
+        provider: 'cngold',
+        symbol: 'GC=F',
+        label: '国际黄金参考',
+      },
+      error: null,
+    }
+  }
+
+  return {
+    provider: 'international-gold-fallback',
+    status: 'unavailable',
+    data: null,
+    error: yahoo.error ?? cnGold.error ?? '国际黄金 provider 未返回数据',
+    latencyMs: yahoo.latencyMs ?? cnGold.latencyMs,
+  }
+}
+
 async function fetchYahooChart(symbol: string) {
   const path = `/v8/finance/chart/${encodeURIComponent(symbol)}?range=2d&interval=1d`
   const init = {
@@ -296,6 +347,8 @@ export async function fetchFredLatest(
       previousClose: previous?.value ?? null,
       unit,
       updatedAt: latest.date,
+      sourceUsage: latest.sourceUsage ?? 'production_realtime',
+      isProductionEligible: latest.isProductionEligible ?? true,
     }
   })
 }
@@ -313,7 +366,15 @@ export async function fetchFredSeries(seriesId: string): Promise<ProviderSeriesP
     }
   }
 
-  return fetchFredCsv(seriesId)
+  try {
+    return await fetchFredCsv(seriesId)
+  } catch (error) {
+    const localSeries = await fetchFredLocalMirror(seriesId)
+    if (localSeries.length > 0) {
+      return localSeries
+    }
+    throw error
+  }
 }
 
 export async function fetchCnGoldQuotes(): Promise<ProviderResult<ProviderQuote[]>> {
@@ -454,6 +515,11 @@ export async function fetchCotGoldNetPosition(): Promise<ProviderResult<Provider
       }
     }
 
+    const local = await fetchLocalCotGoldNetPosition()
+    if (local) {
+      return local
+    }
+
     throw new Error(`COT 黄金持仓源均不可用：${errors.join('；')}`)
   })
 }
@@ -583,7 +649,7 @@ export async function fetchCmeGoldVolume(): Promise<ProviderResult<ProviderQuote
 
 export async function probeAllMarketProviders(): Promise<ProviderHealthRecord[]> {
   const probes: ProviderProbeDefinition[] = [
-    { id: 'GC=F', label: '国际黄金期货', envVars: [], sourceTier: 'critical', participatesInScoring: true, run: () => fetchYahooQuote('GC=F', '国际黄金期货', '美元/盎司') },
+    { id: 'GC=F', label: '国际黄金期货', envVars: [], sourceTier: 'critical', participatesInScoring: true, run: () => fetchInternationalGoldQuote() },
     { id: 'DX-Y.NYB', label: '美元指数(FRED广义)', envVars: ['FRED_API_KEY'], sourceTier: 'critical', participatesInScoring: true, run: () => fetchFredLatest('DTWEXBGS', '美元指数(FRED广义)', '指数', 'DX-Y.NYB') },
     { id: 'USDCNY=X', label: '美元/人民币(FRED)', envVars: ['FRED_API_KEY'], sourceTier: 'critical', participatesInScoring: true, run: () => fetchFredLatest('DEXCHUS', '美元/人民币(FRED)', 'CNY', 'USDCNY=X') },
     { id: 'DFII10', label: '10Y TIPS 实际利率', envVars: ['FRED_API_KEY'], sourceTier: 'critical', participatesInScoring: true, run: () => fetchFredLatest('DFII10', '10Y TIPS 实际利率', '%') },
@@ -720,6 +786,53 @@ async function fetchFredCsv(seriesId: string): Promise<ProviderSeriesPoint[]> {
   return parseFredRows(rows).slice(-8)
 }
 
+async function fetchFredLocalMirror(seriesId: string): Promise<ProviderSeriesPoint[]> {
+  const candidates = LOCAL_FRED_SERIES_FILES[seriesId] ?? []
+  for (const filename of candidates) {
+    try {
+      const text = await readLocalLibraryDataFile(filename)
+      const rows = parseLocalFredCsv(text)
+      if (rows.length > 0) {
+        return rows.slice(-8).map((row) => ({
+          ...row,
+          sourceUsage: filename.includes('mirror-') ? 'mirror_learning' : 'production_realtime',
+          isProductionEligible: !filename.includes('mirror-'),
+        }))
+      }
+    } catch {
+      // Local mirrors are optional development fallbacks.
+    }
+  }
+  return []
+}
+
+function parseLocalFredCsv(text: string): ProviderSeriesPoint[] {
+  const lines = text.trim().split(/\r?\n/).filter(Boolean)
+  const header = parseCsvLine(lines[0] ?? '').map((item) => item.toLowerCase())
+  const dateIndex = header.findIndex((item) => ['date', 'observation_date', 'yyyymmdd'].includes(item))
+  const valueIndex = header.findIndex((item, index) => index !== dateIndex && !['date', 'observation_date', 'yyyymmdd'].includes(item))
+  if (dateIndex < 0 || valueIndex < 0) {
+    return []
+  }
+
+  return parseFredRows(lines.slice(1).map((line) => {
+    const values = parseCsvLine(line)
+    return {
+      date: normalizeFredDate(values[dateIndex] ?? ''),
+      value: values[valueIndex] ?? '',
+    }
+  }))
+}
+
+function normalizeFredDate(value: string) {
+  const trimmed = value.trim()
+  const yyyymmdd = trimmed.match(/^(\d{4})(\d{2})(\d{2})$/)
+  if (yyyymmdd) {
+    return `${yyyymmdd[1]}-${yyyymmdd[2]}-${yyyymmdd[3]}`
+  }
+  return trimmed
+}
+
 function parseFredRows(rows: Array<{ date: string; value: string }>) {
   return rows
     .map((row) => ({
@@ -727,6 +840,45 @@ function parseFredRows(rows: Array<{ date: string; value: string }>) {
       value: Number(row.value),
     }))
     .filter((row) => row.date && Number.isFinite(row.value))
+}
+
+async function fetchLocalCotGoldNetPosition(): Promise<ProviderQuote | null> {
+  try {
+    const text = await readLocalLibraryDataFile('cftc-current-futures-only-legacy.txt')
+    const goldLine = text.split(/\r?\n/).find((line) => line.includes('GOLD - COMMODITY EXCHANGE INC.'))
+    if (!goldLine) {
+      return null
+    }
+    const columns = parseCsvLine(goldLine)
+    const long = normalizeNumber(columns[8])
+    const short = normalizeNumber(columns[9])
+    if (long === null || short === null) {
+      return null
+    }
+    return {
+      provider: 'cot-local-mirror',
+      symbol: 'COT_GOLD_NET',
+      label: 'CFTC 黄金非商净多头',
+      value: long - short,
+      previousClose: null,
+      unit: '张',
+      updatedAt: columns[2] ?? null,
+    }
+  } catch {
+    return null
+  }
+}
+
+async function readLocalLibraryDataFile(filename: string) {
+  let lastError: unknown = null
+  for (const directory of LOCAL_LIBRARY_DATA_DIRS) {
+    try {
+      return await readFile(path.join(directory, filename), 'utf8')
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`本地资料库文件不存在：${filename}`)
 }
 
 function parseCsv(text: string): CsvRow[] {

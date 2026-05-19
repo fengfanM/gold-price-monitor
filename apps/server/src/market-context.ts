@@ -17,14 +17,16 @@ import {
   fetchGldHoldings,
   fetchGoldBloggerSentiment,
   fetchGoldNewsSentiment,
+  fetchInternationalGoldQuote,
   getProviderHealthHistory,
   fetchLbmaGoldPm,
   fetchWorldGoldCouncilEtfFlow,
-  fetchYahooQuote,
   type NewsSentimentData,
   type ProviderQuote,
   type ProviderResult,
 } from './market-providers.js'
+import { readLatestFactorCandles } from './factor-candles.js'
+import { buildMacroRegimeEvidence } from './macro-regime.js'
 
 type FactorScorer = (
   changePercent: number | null,
@@ -37,7 +39,7 @@ export async function buildMarketContext(
 ): Promise<MarketContext> {
   const [spotGoldUsd, dollarIndex, usdCny] = await Promise.all([
     fetchProviderFactor(
-      fetchYahooQuote('GC=F', '国际黄金期货', '美元/盎司'),
+      fetchInternationalGoldQuote(),
       scoreGoldMomentum,
       { id: 'GC=F', label: '国际黄金期货', unit: '美元/盎司' },
     ),
@@ -53,6 +55,7 @@ export async function buildMarketContext(
     ),
   ])
   const rawMacroFactors = await buildMacroFactors()
+  const factorCandles = await readLatestFactorCandles()
 
   const news = await buildNewsSentimentFactor()
   const blogger = await buildBloggerSentimentFactor()
@@ -62,6 +65,10 @@ export async function buildMarketContext(
     backtest,
   )
   const macroFactors = [...rawMacroFactors, ...ruleFactors]
+  const macroRegimeEvidence = buildMacroRegimeEvidence({
+    factorCandles,
+    liveFactors: macroFactors.filter((factor) => factor.id === 'CME_GOLD_OI' || factor.id === 'CME_GOLD_VOLUME'),
+  })
   const factorScore = Math.round(
     (
       averageFactorScore([spotGoldUsd, dollarIndex, usdCny, ...macroFactors]) +
@@ -81,6 +88,7 @@ export async function buildMarketContext(
       usdCny,
     },
     macroFactors,
+    macroRegimeEvidence,
     sentiment: {
       news,
       blogger,
@@ -107,6 +115,8 @@ export function buildUnavailableMarketContext(
     status: 'unavailable',
     summary: `${label}暂不可用，策略按中性处理。`,
     updatedAt: null,
+    sourceUsage: 'unknown',
+    isProductionEligible: false,
   })
   const news = buildSentimentFactor('news', '新闻情绪', '新闻情绪接口尚未配置，当前以中性分进入专家团。')
   const blogger = buildSentimentFactor('blogger', '博主观点可信度', '博主观点源尚未配置，当前不让外部观点影响买卖点强度。')
@@ -140,6 +150,7 @@ export function buildUnavailableMarketContext(
       usdCny: unavailable('usdCny', '美元/人民币', 'CNY'),
     },
     macroFactors,
+    macroRegimeEvidence: buildMacroRegimeEvidence({}),
     sentiment: { news, blogger },
     backtest,
     providerHealth: getProviderHealthHistory(),
@@ -294,6 +305,8 @@ function providerQuoteToFactor(
     status: 'live',
     summary: scored.summary,
     updatedAt: quote.updatedAt,
+    sourceUsage: quote.sourceUsage ?? 'production_realtime',
+    isProductionEligible: quote.isProductionEligible ?? quote.sourceUsage !== 'mirror_learning',
   }
 }
 
@@ -322,6 +335,8 @@ function unavailableFactor(
     status: 'unavailable',
     summary: `${label}暂不可用：${reason}`,
     updatedAt: null,
+    sourceUsage: 'unknown',
+    isProductionEligible: false,
   }
 }
 

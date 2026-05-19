@@ -8,6 +8,7 @@ import {
 import type {
   CanonicalForecast,
   DecisionOverlay,
+  DecisionViewModel,
   EconomicEventRisk,
   ExpertAction,
   ExpertConsensus,
@@ -21,6 +22,7 @@ import type {
   MultiTimeframeConfluence,
   OpportunitySignal,
   PatternSignal,
+  PriceLevel,
   ProbabilityPrediction,
   PsychologyDiscipline,
   PsychologyRiskFlag,
@@ -341,7 +343,7 @@ export function evaluateOpportunity(input: {
     sourceStatus,
     tradePlan,
   })
-  const canonicalForecast = buildCanonicalForecast({
+  const rawCanonicalForecast = buildCanonicalForecast({
     externalModelAdvisor,
     finalDecision,
     latestQuote,
@@ -351,14 +353,24 @@ export function evaluateOpportunity(input: {
     technicals,
     tradePlan,
   })
-  const decisionOverlay = buildDecisionOverlay({
-    canonicalForecast,
+  const decisionView = buildDecisionViewModel({
+    canonicalForecast: rawCanonicalForecast,
     finalDecision,
-    finalScore,
-    level: finalDecision.strongReminderAllowed ? 'strong' : finalScore >= 45 ? 'watch' : 'none',
+    latestQuote,
+    probabilityModel,
+    sourceStatus,
     tradePlan,
   })
-  const level = finalDecision.strongReminderAllowed ? 'strong' : finalScore >= 45 ? 'watch' : 'none'
+  const canonicalForecast = sanitizeCanonicalForecastLevels(rawCanonicalForecast, latestQuote.price)
+  const level = deriveOpportunityLevel(finalDecision)
+  const decisionOverlay = buildDecisionOverlay({
+    canonicalForecast,
+    decisionView,
+    finalDecision,
+    finalScore,
+    level,
+    tradePlan,
+  })
   const expertOpinions = buildExpertOpinions({
     externalModelAdvisor,
     finalScore,
@@ -391,6 +403,7 @@ export function evaluateOpportunity(input: {
     knowledgeRuleAudit,
     canonicalForecast,
     decisionOverlay,
+    decisionView,
     finalDecision,
     tradePlan,
     confluence,
@@ -551,12 +564,13 @@ function buildCanonicalForecast(input: {
 
 function buildDecisionOverlay(input: {
   canonicalForecast: CanonicalForecast
+  decisionView: DecisionViewModel
   finalDecision: FinalDecision
   finalScore: number
   level: OpportunitySignal['level']
   tradePlan: TradePlan
 }): DecisionOverlay {
-  const { canonicalForecast, finalDecision, finalScore, level, tradePlan } = input
+  const { canonicalForecast, decisionView, finalDecision, finalScore, level, tradePlan } = input
   const source: DecisionOverlay['source'] = canonicalForecast.priceInterval.source === 'externalModel'
     ? 'external_model'
     : tradePlan.entryZone
@@ -564,14 +578,16 @@ function buildDecisionOverlay(input: {
       : canonicalForecast.primaryPatternId
         ? 'pattern_structure'
         : 'local_probability'
+  const showProbability = decisionView.probabilityDisplay.mode === 'calibrated' &&
+    decisionView.probabilityDisplay.value !== null
   return {
     version: 'decision-overlay-v1',
     generatedAt: canonicalForecast.generatedAt,
     source,
     horizonMinutes: canonicalForecast.horizonMinutes,
     horizonLabel: `${canonicalForecast.horizonMinutes}分钟 TP1路径`,
-    upProbability: Math.round(canonicalForecast.probability.up * 100),
-    downProbability: Math.round(canonicalForecast.probability.down * 100),
+    upProbability: showProbability ? Math.round(canonicalForecast.probability.up * 100) : 0,
+    downProbability: showProbability ? Math.round(canonicalForecast.probability.down * 100) : 0,
     confidence: canonicalForecast.probability.confidence,
     intervalLow: canonicalForecast.priceInterval.low,
     intervalHigh: canonicalForecast.priceInterval.high,
@@ -586,9 +602,233 @@ function buildDecisionOverlay(input: {
     warnings: compact([
       ...canonicalForecast.warnings,
       finalDecision.userAdvice,
+      decisionView.probabilityDisplay.reason,
       `最终等级 ${level}，策略分 ${finalScore}/100。`,
     ]),
   }
+}
+
+function sanitizeCanonicalForecastLevels(
+  forecast: CanonicalForecast,
+  anchorPrice: number,
+): CanonicalForecast {
+  const validation = buildLevelValidation(forecast, anchorPrice)
+  return {
+    ...forecast,
+    levels: {
+      ...forecast.levels,
+      support: validation.support.status === 'valid' ? forecast.levels.support : null,
+      resistance: validation.resistance.status === 'valid' ? forecast.levels.resistance : null,
+      trigger: validation.trigger.status === 'valid' ? forecast.levels.trigger : null,
+      stopLoss: validation.stopLoss.status === 'valid' ? forecast.levels.stopLoss : null,
+      invalidation: validateLevel(forecast.levels.invalidation, anchorPrice).status === 'valid'
+        ? forecast.levels.invalidation
+        : null,
+      targets: forecast.levels.targets.filter((level) => validateLevel(level, anchorPrice).status === 'valid'),
+    },
+    warnings: [
+      ...forecast.warnings,
+      ...compact([
+        validation.support.status === 'invalid' ? `支撑位隐藏：${validation.support.reason}` : null,
+        validation.resistance.status === 'invalid' ? `压力位隐藏：${validation.resistance.reason}` : null,
+        validation.trigger.status === 'invalid' ? `触发价隐藏：${validation.trigger.reason}` : null,
+        validation.stopLoss.status === 'invalid' ? `止损价隐藏：${validation.stopLoss.reason}` : null,
+      ]),
+    ],
+  }
+}
+
+function deriveOpportunityLevel(finalDecision: FinalDecision): OpportunitySignal['level'] {
+  if (finalDecision.strongReminderAllowed) {
+    return 'strong'
+  }
+  if (
+    finalDecision.action === 'watch' ||
+    finalDecision.action === 'probe' ||
+    finalDecision.action === 'confirm_then_enter'
+  ) {
+    return finalDecision.signalGrade === 'watch' ||
+      finalDecision.signalGrade === 'qualified' ||
+      finalDecision.signalGrade === 'strong_watch'
+      ? 'watch'
+      : 'none'
+  }
+  return 'none'
+}
+
+function buildDecisionViewModel(input: {
+  canonicalForecast: CanonicalForecast
+  finalDecision: FinalDecision
+  latestQuote: QuoteSample
+  probabilityModel: OpportunitySignal['probabilityModel']
+  sourceStatus: SourceStatus
+  tradePlan: TradePlan
+}): DecisionViewModel {
+  const {
+    canonicalForecast,
+    finalDecision,
+    latestQuote,
+    probabilityModel,
+    sourceStatus,
+    tradePlan,
+  } = input
+  const prediction = probabilityModel.primaryPrediction
+  const calibrationStatus = buildCalibrationStatus(finalDecision, prediction)
+  const probabilityDisplay = buildDecisionProbabilityDisplay(finalDecision, prediction, calibrationStatus)
+  const levelValidation = buildLevelValidation(canonicalForecast, latestQuote.price)
+  const sourceWarnings = compact([
+    sourceStatus.stale ? '主报价源陈旧，禁止把当前读数当作实时买点依据。' : null,
+    sourceStatus.active === 'fallback' ? '当前使用备用行情源，需等官方源恢复后再复核。' : null,
+    latestQuote.marketReference.calibration.withinReferenceRange === false
+      ? '交易价与参考锚点偏离过大，报价口径不一致。'
+      : null,
+    latestQuote.marketReference.calibration.premiumPercent === null
+      ? '缺少上金所/AU9999 锚点，无法确认当前价格是否真的便宜。'
+      : null,
+  ])
+  const canAct =
+    finalDecision.strongReminderAllowed &&
+    Boolean(tradePlan.triggerPrice) &&
+    Boolean(tradePlan.stopLoss) &&
+    Boolean(tradePlan.takeProfit1) &&
+    tradePlan.riskRewardRatio !== null &&
+    tradePlan.riskRewardRatio >= 2.5
+
+  return {
+    version: 'decision-view-v1',
+    action: finalDecision.action,
+    displayGrade: finalDecision.signalGrade,
+    primaryInstruction: finalDecision.userAdvice,
+    beginnerInstruction: finalDecision.beginnerAdvice,
+    canAct,
+    triggerPrice: tradePlan.triggerPrice,
+    stopLoss: tradePlan.stopLoss,
+    takeProfit1: tradePlan.takeProfit1,
+    riskRewardRatio: tradePlan.riskRewardRatio,
+    probabilityDisplay,
+    calibrationStatus,
+    levelValidation,
+    sourceWarnings,
+    blockerSummary: finalDecision.blockedReasons[0] ?? finalDecision.downgradeReasons[0] ?? '暂无硬性拦截，继续按交易计划复核。',
+    updatedAt: canonicalForecast.generatedAt,
+  }
+}
+
+function buildCalibrationStatus(
+  finalDecision: FinalDecision,
+  prediction: ProbabilityPrediction,
+): DecisionViewModel['calibrationStatus'] {
+  const hasUsableSample = finalDecision.sampleStatus === 'usable' || finalDecision.sampleStatus === 'robust'
+  const hasBrier = prediction.brierScore !== null && Number.isFinite(prediction.brierScore)
+  const brierOk = hasBrier && prediction.brierScore !== null && prediction.brierScore <= 0.24
+  const canShowNumericProbability =
+    hasUsableSample &&
+    brierOk &&
+    !finalDecision.hardGates.some((gate) => gate.status === 'block')
+  const reason = canShowNumericProbability
+    ? `样本 ${prediction.sampleSize} 个，Brier ${prediction.brierScore?.toFixed(3)}，允许展示校准后概率。`
+    : !hasUsableSample
+      ? `样本 ${prediction.sampleSize} 个，未达到 30 个合格样本门槛。`
+      : !hasBrier
+        ? '缺少 Brier 校准误差，不能把倾向展示成精确概率。'
+        : !brierOk
+          ? `Brier ${prediction.brierScore?.toFixed(3)} 未达标，概率仅供模型内部降权参考。`
+          : '存在硬闸门拦截，概率不能覆盖风控结论。'
+
+  return {
+    sampleSize: prediction.sampleSize,
+    brierScore: prediction.brierScore,
+    sampleStatus: finalDecision.sampleStatus,
+    canShowNumericProbability,
+    reason,
+  }
+}
+
+function buildDecisionProbabilityDisplay(
+  finalDecision: FinalDecision,
+  prediction: ProbabilityPrediction,
+  calibrationStatus: DecisionViewModel['calibrationStatus'],
+): DecisionViewModel['probabilityDisplay'] {
+  if (finalDecision.hardGates.some((gate) => gate.status === 'block')) {
+    return {
+      mode: 'hidden',
+      value: null,
+      label: '概率隐藏',
+      reason: '存在硬闸门拦截，页面不展示精确上涨概率，避免覆盖风控结论。',
+    }
+  }
+  if (calibrationStatus.canShowNumericProbability) {
+    return {
+      mode: 'calibrated',
+      value: roundProbability(prediction.probability),
+      label: '校准后 TP1 先达概率',
+      reason: calibrationStatus.reason,
+    }
+  }
+  if (calibrationStatus.sampleStatus === 'warming_up') {
+    return {
+      mode: 'tendency',
+      value: null,
+      label: prediction.probability >= 0.54 ? '未校准偏多倾向' : prediction.probability <= 0.46 ? '未校准偏空倾向' : '未校准中性倾向',
+      reason: calibrationStatus.reason,
+    }
+  }
+  return {
+    mode: 'hidden',
+    value: null,
+    label: '样本不足',
+    reason: calibrationStatus.reason,
+  }
+}
+
+function buildLevelValidation(
+  canonicalForecast: CanonicalForecast,
+  anchorPrice: number,
+): DecisionViewModel['levelValidation'] {
+  const support = validateLevel(canonicalForecast.levels.support, anchorPrice)
+  const resistance = validateLevel(canonicalForecast.levels.resistance, anchorPrice)
+  const trigger = validateLevel(canonicalForecast.levels.trigger, anchorPrice)
+  const stopLoss = validateLevel(canonicalForecast.levels.stopLoss, anchorPrice)
+  const takeProfit1 = validateLevel(canonicalForecast.levels.targets[0] ?? null, anchorPrice)
+  const minGap = Math.max(anchorPrice * 0.00035, 0.08)
+
+  if (
+    support.status === 'valid' &&
+    resistance.status === 'valid' &&
+    support.price !== null &&
+    resistance.price !== null &&
+    Math.abs(resistance.price - support.price) < minGap
+  ) {
+    return {
+      support: { ...support, status: 'invalid', reason: '支撑与压力距离过近，关键区间未真正形成。' },
+      resistance: { ...resistance, status: 'invalid', reason: '支撑与压力距离过近，关键区间未真正形成。' },
+      trigger,
+      stopLoss,
+      takeProfit1,
+    }
+  }
+
+  return { support, resistance, trigger, stopLoss, takeProfit1 }
+}
+
+function validateLevel(
+  level: PriceLevel | null,
+  anchorPrice: number,
+): DecisionViewModel['levelValidation']['support'] {
+  if (!level) {
+    return { price: null, status: 'missing', reason: '暂无足够结构样本形成该关键价。' }
+  }
+  const minGap = Math.max(anchorPrice * 0.00025, 0.06)
+  if (Math.abs(level.price - anchorPrice) < minGap) {
+    return { price: level.price, status: 'invalid', reason: '关键价与当前价过近，不能作为独立触发/止损依据。' }
+  }
+  if ((level.role === 'support' || level.role === 'stopLoss' || level.role === 'invalidation') && level.price >= anchorPrice) {
+    return { price: level.price, status: 'invalid', reason: '下方关键价不应高于或等于当前交易价。' }
+  }
+  if ((level.role === 'resistance' || level.role === 'trigger' || level.role === 'takeProfit') && level.price <= anchorPrice) {
+    return { price: level.price, status: 'invalid', reason: '上方关键价不应低于或等于当前交易价。' }
+  }
+  return { price: level.price, status: 'valid', reason: level.note }
 }
 
 function buildPriceLevel(

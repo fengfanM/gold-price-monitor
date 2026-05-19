@@ -31,7 +31,7 @@ Gold Price Monitor 的目标就是把这些问题变成一套清晰、可复盘�
 | 多源校准 | 上金所 / AU9999、金投网、浙商积存金、国际金、汇率和宏观源框架 | 不同源有延迟和口径差异，不能粗暴平均 |
 | 本地概率模型 | `rules-calibrated-logit-triple-barrier-v1`，输出 `5m / 15m / 60m / 240m` TP1 先达概率 | 这是规则校准 logit + 路径标签，不是深度学习训练模型 |
 | 买点评分 | 技术、形态、估值、宏观、事件、心理纪律、交易计划和回测共同影响分数与上限 | 分数不是买入指令 |
-| 知识库规则包 | `gold-kb-rule-pack-v1`，审校趋势结构、形态位置、假突破、事件阶段和赔率纪律 | 规则包用于拦截误判，不保证 100% 正确 |
+| 知识库规则包 | `gold-kb-rule-pack-v3`，审校趋势结构、形态位置、假突破、事件阶段、赔率纪律和宏观 regime | 规则包用于拦截误判，不保证 100% 正确 |
 | 统一预测口径 | `canonicalForecast`，统一图上预测区间、TP1先达概率、支撑/压力、止损和目标 | 前端不再自行把形态置信度当成功率 |
 | 外部军师 | `EXTERNAL_TS_MODEL_URL` / `EXTERNAL_TS_MODEL_ENDPOINTS` HTTP 接口，支持多 provider schema | 接口支持不等于所有 provider 已生产稳定运行 |
 | Chronos-Bolt | 可选本地 Chronos-Bolt 推理服务，已做过真实模型联调 | 当前不能宣传为已验证高准确率交易模型 |
@@ -91,6 +91,7 @@ Gold Price Monitor 的目标就是把这些问题变成一套清晰、可复盘�
 | `kb:pattern-location` | 形态是否确认、是否在高位或箱体中位 | 候选形态只允许观察 |
 | `kb:false-breakout` | 高位、波动扩张、未回踩确认、扫流动性后回落 | 高风险时阻止强提醒 |
 | `kb:chop-and-compression` | 窄幅压缩、箱体中位、均线反复穿越 | 噪音过高时阻止概率模型抬分 |
+| `kb:macro-evidence-gate` | 实际利率、美元、核心 CPI、VIX、CME OI/Volume、COT/ETF/WGC 资金流 | 宏观压力组合强制降级；镜像数据只作离线校准参考，不放大实时强提醒 |
 | `kb:event-phase` | CPI/FOMC/非农等事件阶段 | 事件第一波不追单 |
 | `kb:risk-reward-discipline` | 交易计划赔率是否至少 2:1 | 赔率不足时拦截 |
 

@@ -103,6 +103,12 @@ export function extractProbabilityFeatures(input: {
     anchorCheap: premiumPercent === null ? null : clamp(-premiumPercent / 0.006, -1, 1),
     anchorExpensive: premiumPercent === null ? null : clamp(premiumPercent / 0.02, 0, 1),
     marketSupport: clamp((marketContext.factorScore - 50) / 50, -1, 1),
+    macroRegimePressure: marketContext.macroRegimeEvidence?.status === 'pressure' ? 1 : 0,
+    macroRegimeSupport: marketContext.macroRegimeEvidence?.status === 'supportive' &&
+      marketContext.macroRegimeEvidence.isProductionEligible
+      ? 1
+      : 0,
+    mirrorMacroOnly: marketContext.macroRegimeEvidence?.sourceUsage === 'mirror_learning' ? 1 : 0,
     sentimentSupport: clamp(
       ((marketContext.sentiment.news.score - 50) * marketContext.sentiment.news.confidence +
         (marketContext.sentiment.blogger.score - 50) * marketContext.sentiment.blogger.confidence) /
@@ -360,6 +366,9 @@ function scoreLogit(features: ProbabilityModelFeatureSet, horizonMinutes: Probab
     value('kb.pullbackQuality') * 0.16 +
     value('kb.supportResistanceQuality') * 0.12 +
     value('kb.macroAlignmentScore') * 0.12 +
+    value('macroRegimeSupport') * 0.08 -
+    value('macroRegimePressure') * 0.22 -
+    value('mirrorMacroOnly') * 0.02 +
     value('dataDepth') * 0.10 -
     value('sourcePenalty') * 0.24
   )
@@ -409,7 +418,7 @@ function snapshotRuleProbability(snapshot: BacktestSnapshot) {
     ? 0
     : (snapshot.confluenceScore - 50) / 100
   const macroPart = snapshot.macroRegime === 'supportive'
-    ? 0.12
+    ? (snapshot.macroRegimeEvidenceStatus === 'supportive' ? 0.06 : 0.12)
     : snapshot.macroRegime === 'pressure'
       ? -0.16
       : 0

@@ -33,6 +33,7 @@ import {
   saveMarketContext,
 } from './storage.js'
 import { buildOpportunitySignal } from './strategy.js'
+import { buildQuoteSourceLedger } from './source-ledger.js'
 
 const ALERT_DROP_THRESHOLD = Number(process.env.ALERT_DROP_THRESHOLD ?? '0.01')
 const ALERT_DRAWDOWN_THRESHOLD = Number(
@@ -69,7 +70,11 @@ export class QuoteService {
     this.latestMarketContextBuiltAt = marketContext
       ? new Date(marketContext.updatedAt).getTime()
       : 0
-    await this.refresh()
+    try {
+      await this.refresh()
+    } catch (error) {
+      this.lastRefreshError = error instanceof Error ? error.message : String(error)
+    }
   }
 
   async refresh() {
@@ -104,6 +109,7 @@ export class QuoteService {
     const stats = buildStats(this.history, this.latestQuote)
     const alert = buildAlert(stats)
     const sourceStatus = this.getSourceStatus()
+    const sourceLedger = buildQuoteSourceLedger(this.latestQuote, sourceStatus)
     const quality = buildDataQuality(
       this.latestQuote,
       stats,
@@ -138,6 +144,7 @@ export class QuoteService {
       sourceName: this.latestQuote.sourceName,
       sourceKind: this.latestQuote.sourceKind,
       sourceStatus,
+      sourceLedger,
       dayRange: {
         low: this.latestQuote.dayLow,
         high: this.latestQuote.dayHigh,
@@ -254,6 +261,11 @@ export class QuoteService {
     const anchorPrice = normalizeReferencePrice(
       quote.marketReference.calibration.anchorPrice,
     )
+    this.latestMarketContext = await this.buildMarketContextIfNeeded(quote)
+    const referenceHistoryFields = buildReferenceHistoryFields(
+      quote.marketReference,
+      this.latestMarketContext,
+    )
 
     this.history = mergeHistoryPoint(this.history, {
       price: quote.price,
@@ -269,10 +281,10 @@ export class QuoteService {
       referenceAutdPrice: normalizeReferencePrice(
         quote.marketReference.autd?.latestPrice ?? null,
       ),
+      ...referenceHistoryFields,
       timestamp: quote.fetchedAt,
       sourceKind: quote.sourceKind,
     })
-    this.latestMarketContext = await this.buildMarketContextIfNeeded(quote)
     const stats = buildStats(this.history, quote)
     const patternSignals = detectPatternSignals(this.history, quote)
     const localOpportunity = buildOpportunitySignal(
@@ -304,6 +316,11 @@ export class QuoteService {
       confluenceScore: localOpportunity.confluence.score,
       confluenceConflictLevel: localOpportunity.confluence.conflictLevel,
       macroRegime: marketRegimeFromScore(this.latestMarketContext.factorScore),
+      macroRegimeEvidenceStatus: this.latestMarketContext.macroRegimeEvidence?.status ?? null,
+      inflationPhase: this.latestMarketContext.macroRegimeEvidence?.inflationPhase ?? null,
+      realRateTrend: this.latestMarketContext.macroRegimeEvidence?.realRateTrend ?? null,
+      usdCnyAlignment: this.latestMarketContext.macroRegimeEvidence?.usdCnyAlignment ?? null,
+      cmeBreakoutQuality: this.latestMarketContext.macroRegimeEvidence?.cmeBreakoutQuality ?? null,
       modelProbability: localOpportunity.probabilityModel.primaryPrediction.probability,
       modelConfidence: localOpportunity.probabilityModel.primaryPrediction.confidence,
       externalModelStatus: this.latestExternalModelAdvisor.status,
@@ -356,6 +373,11 @@ export class QuoteService {
         confluenceScore: opportunity.confluence.score,
         confluenceConflictLevel: opportunity.confluence.conflictLevel,
         macroRegime: marketRegimeFromScore(this.latestMarketContext.factorScore),
+        macroRegimeEvidenceStatus: this.latestMarketContext.macroRegimeEvidence?.status ?? null,
+        inflationPhase: this.latestMarketContext.macroRegimeEvidence?.inflationPhase ?? null,
+        realRateTrend: this.latestMarketContext.macroRegimeEvidence?.realRateTrend ?? null,
+        usdCnyAlignment: this.latestMarketContext.macroRegimeEvidence?.usdCnyAlignment ?? null,
+        cmeBreakoutQuality: this.latestMarketContext.macroRegimeEvidence?.cmeBreakoutQuality ?? null,
         modelProbability: opportunity.probabilityModel.primaryPrediction.probability,
         modelConfidence: opportunity.probabilityModel.primaryPrediction.confidence,
         externalModelStatus: opportunity.externalModelAdvisor?.status ?? null,
@@ -485,6 +507,7 @@ function sortByTime(left: HistoryPoint, right: HistoryPoint) {
 }
 
 function buildStats(history: HistoryPoint[], latestQuote: QuoteSample) {
+  const referenceHistoryFields = buildReferenceHistoryFields(latestQuote.marketReference)
   const rollingHistory = history.length > 0
     ? history
     : [{
@@ -503,6 +526,7 @@ function buildStats(history: HistoryPoint[], latestQuote: QuoteSample) {
         referenceAutdPrice: normalizeReferencePrice(
           latestQuote.marketReference.autd?.latestPrice ?? null,
         ),
+        ...referenceHistoryFields,
         timestamp: latestQuote.fetchedAt,
         sourceKind: latestQuote.sourceKind,
       }]
@@ -670,6 +694,36 @@ function sourceHealthFromStatus(sourceStatus: SourceStatus) {
 
 function normalizeReferencePrice(value: number | null) {
   return value !== null && Number.isFinite(value) && value > 0 ? value : null
+}
+
+function buildReferenceHistoryFields(
+  marketReference: MarketReference,
+  marketContext?: MarketContext | null,
+) {
+  const domesticReferences = marketReference.domesticReferences ?? []
+  return {
+    referenceZheshangPrice: findDomesticReferencePrice(domesticReferences, isZheshangReference),
+    referenceDomesticGoldPrice: findDomesticReferencePrice(
+      domesticReferences,
+      (item) => item.symbol === 'JO_9753',
+    ),
+    referenceInternationalGoldPrice: normalizeReferencePrice(
+      marketContext?.factors.spotGoldUsd.value ?? null,
+    ),
+  }
+}
+
+function findDomesticReferencePrice(
+  references: NonNullable<MarketReference['domesticReferences']>,
+  matcher: (reference: NonNullable<MarketReference['domesticReferences']>[number]) => boolean,
+) {
+  const reference = references.find(matcher)
+  return normalizeReferencePrice(reference?.latestPrice ?? null)
+}
+
+function isZheshangReference(reference: NonNullable<MarketReference['domesticReferences']>[number]) {
+  const text = `${reference.symbol} ${reference.label ?? ''} ${reference.provider ?? ''}`.toLowerCase()
+  return text.includes('zheshang') || text.includes('浙商')
 }
 
 function calculateConsensusPrice(values: Array<number | null>) {

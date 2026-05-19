@@ -30,6 +30,17 @@
 | `data/cftc-current-disaggregated-futures-only.txt` | CFTC | Official TXT | 细分 COT 持仓、管理基金/商业/掉期商结构 |
 | `data/fred-dexchus-usdcny-cache.csv` | FRED 本地缓存 | Official CSV cache | `DEXCHUS` 美元兑人民币历史数据 |
 | `data/fred-dtwexbgs-dollar-index-cache.csv` | FRED 本地缓存 | Official CSV cache | `DTWEXBGS` 美元广义指数历史数据 |
+| `data/mirror-ivo-fred-CPIAUCSL.csv` | FRED CSV Gateway 镜像 | Mirror CSV | CPI-U All Items，BLS/FRED 替代样本 |
+| `data/mirror-ivo-fred-CPILFESL.csv` | FRED CSV Gateway 镜像 | Mirror CSV | Core CPI，BLS/FRED 替代样本 |
+| `data/mirror-ivo-fred-dgs10.csv` | FRED CSV Gateway 镜像 | Mirror CSV | 10Y 名义利率 |
+| `data/mirror-ivo-fred-DFII10.csv` | FRED CSV Gateway 镜像 | Mirror CSV | 10Y TIPS 实际利率 |
+| `data/mirror-ivo-fred-T10YIE.csv` | FRED CSV Gateway 镜像 | Mirror CSV | 10Y 通胀预期 |
+| `data/mirror-ivo-fred-DTWEXBGS.csv` | FRED CSV Gateway 镜像 | Mirror CSV | 美元广义指数 |
+| `data/mirror-ivo-fred-DEXCHUS.csv` | FRED CSV Gateway 镜像 | Mirror CSV | 美元兑人民币 |
+| `data/mirror-ivo-fred-VIXCLS.csv` | FRED CSV Gateway 镜像 | Mirror CSV | VIX |
+| `data/mirror-github-cpiaucsl-1947-2020.csv` | GitHub 镜像 | Mirror CSV；生产禁用 | CPIAUCSL 历史样本，仅用于离线学习 |
+| `data/mirror-datasets-us-10y-monthly.csv` | GitHub datasets 镜像 | Mirror CSV；生产禁用 | 美国 10Y 月度收益率样本，仅用于离线学习 |
+| `data/cme-comex-gold-futures-official-snapshot.md` | CME 官方页面快照 | Official page snapshot | COMEX 黄金期货合约规格和关键影响因素 |
 
 ## 4. 本轮未能下载的官方源
 
@@ -66,3 +77,18 @@ python3 docs/reference/kline-gold-trading/library/download-retry-missing.py
 - 公开教育 PDF 可用于学习和规则转译，不直接复制大段原文进产品。
 - 受版权保护的现代交易书籍只保存正版入口和读书摘要，不保存全文。
 - 所有资料观点进入交易系统前必须转成可回测字段、阈值、样本统计和风控门控。
+
+## 7. 宏观镜像数据进入模型的边界
+
+| 状态 | 文件/字段 | 模型处理 |
+| --- | --- | --- |
+| `learning_only_mirror` | `mirror-ivo-fred-*` 原始 CSV；`standardized-factor-candles/*.factor-candles.csv/jsonl` | 允许离线学习、宏观 regime 解释、回测分桶；不允许放大实时强提醒 |
+| `production_disabled` | `mirror-github-cpiaucsl-1947-2020.csv`、`mirror-datasets-us-10y-monthly.csv`、`offline_sample_production_disabled` 转换样本 | 只保留资料索引和离线反例；不进入评分和页面建议 |
+| `production_eligible` | CFTC 官方 TXT、人工校验官方 CSV、FRED/BLS/CME/WGC 授权或官方 API | 可作为生产候选源，但必须通过 freshness、来源健康和异常检测 |
+
+### 7.1 本轮已实现的可执行规则
+
+- `DFII10` 实际利率上行、`DTWEXBGS` 美元走强、`CPILFESL` 核心 CPI 粘性、`VIXCLS` 低位同时出现时，知识库规则包 `gold-kb-rule-pack-v3` 会把买点强提醒降级。
+- 实际利率下行、美元转弱、`DEXCHUS` 支撑人民币金价、VIX 温和避险时，只解释为中期背景支持；如果来源是镜像，不能给 1m/5m 交易放大加分。
+- `CME_GOLD_OI` 与 `CME_GOLD_VOLUME` 只用于突破质量解释：OI/Volume 未确认时，不能把突破包装成高质量买点。
+- 所有宏观镜像因子前端展示为“离线校准参考”，不显示成实时交易依据。

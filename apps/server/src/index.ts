@@ -265,7 +265,9 @@ async function main() {
   })
 
   setInterval(() => {
-    void service.refresh()
+    void service.refresh().catch((error) => {
+      console.error('background refresh failed:', error)
+    })
   }, POLL_INTERVAL_MS).unref()
 
   app.listen(PORT, () => {

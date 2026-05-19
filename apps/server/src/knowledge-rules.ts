@@ -13,7 +13,7 @@ import type {
   ValuationMetrics,
 } from './types.js'
 
-export const KNOWLEDGE_RULE_PACK_VERSION = 'gold-kb-rule-pack-v2'
+export const KNOWLEDGE_RULE_PACK_VERSION = 'gold-kb-rule-pack-v3'
 
 export function buildKnowledgeRuleAudit(input: {
   history: HistoryPoint[]
@@ -376,6 +376,13 @@ function buildMaWhipsawRisk(prices: number[], ma20: number | null) {
 }
 
 function buildMacroEvidenceStatus(marketContext: MarketContext): KnowledgeRuleCheck['status'] {
+  const regime = marketContext.macroRegimeEvidence
+  if (regime?.status === 'pressure') {
+    return 'block'
+  }
+  if (regime?.sourceUsage === 'mirror_learning' && !regime.isProductionEligible) {
+    return 'watch'
+  }
   const factors = getMacroEvidenceFactors(marketContext)
   const liveGroups = new Set(factors.filter((factor) => factor.status === 'live').map((factor) => macroEvidenceGroup(factor.id)))
   const pressureGroups = new Set(factors.filter((factor) => factor.impact === 'pressure').map((factor) => macroEvidenceGroup(factor.id)))
@@ -389,6 +396,16 @@ function buildMacroEvidenceStatus(marketContext: MarketContext): KnowledgeRuleCh
 }
 
 function buildMacroEvidenceReason(marketContext: MarketContext) {
+  const regime = marketContext.macroRegimeEvidence
+  if (regime?.status === 'pressure') {
+    return `宏观 regime 压力组合触发：${regime.opposingReasons.slice(0, 3).join('；')} 强提醒必须降级。`
+  }
+  if (regime?.sourceUsage === 'mirror_learning' && !regime.isProductionEligible) {
+    const support = regime.supportingReasons.length > 0
+      ? `；${regime.supportingReasons[0]}`
+      : ''
+    return `宏观镜像源仅作离线校准参考，不能放大实时买点${support}`
+  }
   const factors = getMacroEvidenceFactors(marketContext)
   const liveGroups = new Set(factors.filter((factor) => factor.status === 'live').map((factor) => macroEvidenceGroup(factor.id)))
   const pressure = factors.filter((factor) => factor.impact === 'pressure')
@@ -402,12 +419,19 @@ function buildMacroEvidenceReason(marketContext: MarketContext) {
 }
 
 function buildMacroEvidenceImpact(marketContext: MarketContext) {
+  const regime = marketContext.macroRegimeEvidence
+  if (regime?.status === 'pressure') {
+    return Math.min(-5, regime.scoreImpact)
+  }
+  if (regime?.sourceUsage === 'mirror_learning' && !regime.isProductionEligible) {
+    return Math.min(0, regime.scoreImpact)
+  }
   const status = buildMacroEvidenceStatus(marketContext)
   return status === 'block' ? -5 : status === 'watch' ? -2 : 1
 }
 
 function getMacroEvidenceFactors(marketContext: MarketContext) {
-  const ids = new Set(['COT_GOLD_NET', 'GLD_FLOW', 'WGC_ETF_FLOW', 'CME_GOLD_OI', 'CME_GOLD_VOLUME', 'WGC_CENTRAL_BANK'])
+  const ids = new Set(['COT_GOLD_NET', 'GLD_FLOW', 'WGC_ETF_FLOW', 'CME_GOLD_OI', 'CME_GOLD_VOLUME', 'CENTRAL_BANK_GOLD'])
   return (marketContext.macroFactors ?? []).filter((factor) => ids.has(factor.id))
 }
 

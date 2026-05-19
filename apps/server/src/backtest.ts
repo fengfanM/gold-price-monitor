@@ -1008,6 +1008,31 @@ function buildSnapshotBuckets(snapshot: BacktestSnapshot) {
       dimension: 'macro' as const,
     },
     {
+      key: `macro_regime:${snapshot.macroRegimeEvidenceStatus ?? snapshot.macroRegime ?? 'unknown'}`,
+      label: `宏观 regime：${macroRegimeLabel(snapshot.macroRegimeEvidenceStatus ?? snapshot.macroRegime)}`,
+      dimension: 'macro_regime' as const,
+    },
+    {
+      key: `inflation_phase:${snapshot.inflationPhase ?? 'unknown'}`,
+      label: `通胀阶段：${inflationPhaseLabel(snapshot.inflationPhase)}`,
+      dimension: 'inflation_phase' as const,
+    },
+    {
+      key: `real_rate_trend:${snapshot.realRateTrend ?? 'unknown'}`,
+      label: `实际利率趋势：${realRateTrendLabel(snapshot.realRateTrend)}`,
+      dimension: 'real_rate_trend' as const,
+    },
+    {
+      key: `usd_cny_alignment:${snapshot.usdCnyAlignment ?? 'unknown'}`,
+      label: `人民币金价汇率环境：${usdCnyAlignmentLabel(snapshot.usdCnyAlignment)}`,
+      dimension: 'usd_cny_alignment' as const,
+    },
+    {
+      key: `cme_breakout_quality:${snapshot.cmeBreakoutQuality ?? 'unknown'}`,
+      label: `CME 突破质量：${cmeBreakoutQualityLabel(snapshot.cmeBreakoutQuality)}`,
+      dimension: 'cme_breakout_quality' as const,
+    },
+    {
       key: `confluence:${snapshot.confluenceConflictLevel ?? 'unknown'}`,
       label: `周期冲突：${confluenceConflictLabel(snapshot.confluenceConflictLevel)}`,
       dimension: 'confluence' as const,
@@ -1105,6 +1130,21 @@ function bucketLabelFromKey(key: string) {
   }
   if (key.startsWith('macro:')) {
     return `宏观环境：${macroRegimeLabel(value)}`
+  }
+  if (key.startsWith('macro_regime:')) {
+    return `宏观 regime：${macroRegimeLabel(value)}`
+  }
+  if (key.startsWith('inflation_phase:')) {
+    return `通胀阶段：${inflationPhaseLabel(value)}`
+  }
+  if (key.startsWith('real_rate_trend:')) {
+    return `实际利率趋势：${realRateTrendLabel(value)}`
+  }
+  if (key.startsWith('usd_cny_alignment:')) {
+    return `人民币金价汇率环境：${usdCnyAlignmentLabel(value)}`
+  }
+  if (key.startsWith('cme_breakout_quality:')) {
+    return `CME 突破质量：${cmeBreakoutQualityLabel(value)}`
   }
   if (key.startsWith('confluence:')) {
     return `周期冲突：${confluenceConflictLabel(value)}`
@@ -1219,6 +1259,58 @@ function macroRegimeLabel(regime: string | null | undefined) {
   }
   if (regime === 'neutral') {
     return '中性'
+  }
+  return '未知'
+}
+
+function inflationPhaseLabel(phase: string | null | undefined) {
+  if (phase === 'accelerating') {
+    return '通胀再加速'
+  }
+  if (phase === 'sticky') {
+    return '核心通胀粘性'
+  }
+  if (phase === 'cooling') {
+    return '通胀降温'
+  }
+  return '未知'
+}
+
+function realRateTrendLabel(trend: string | null | undefined) {
+  if (trend === 'rising') {
+    return '上行压制'
+  }
+  if (trend === 'falling') {
+    return '回落支持'
+  }
+  if (trend === 'flat') {
+    return '横盘中性'
+  }
+  return '未知'
+}
+
+function usdCnyAlignmentLabel(alignment: string | null | undefined) {
+  if (alignment === 'cny_gold_support') {
+    return '汇率支撑人民币金'
+  }
+  if (alignment === 'cny_gold_pressure') {
+    return '汇率压制人民币金'
+  }
+  if (alignment === 'neutral') {
+    return '中性'
+  }
+  return '未知'
+}
+
+function cmeBreakoutQualityLabel(quality: string | null | undefined) {
+  if (quality === 'confirmed') {
+    return 'OI/Volume 确认'
+  }
+  if (quality === 'not_confirmed') {
+    return 'OI/Volume 未确认'
+  }
+  if (quality === 'unavailable') {
+    return '不可用'
   }
   return '未知'
 }

@@ -59,6 +59,41 @@ export type QuoteSample = {
   marketReference: MarketReference
 }
 
+export type QuoteSourceUsage =
+  | 'production_realtime'
+  | 'reference_calibration'
+  | 'mirror_learning'
+  | 'disabled'
+
+export type QuoteSourceLedgerEntry = {
+  sourceId: string
+  label: string
+  instrument: string
+  tradable: boolean
+  price: number | null
+  timestamp: string | null
+  marketSession: 'trading' | 'closed' | 'unknown'
+  sourceUsage: QuoteSourceUsage
+  freshnessMs: number | null
+  confidence: 'high' | 'medium' | 'low'
+  discrepancyFromTradePrice: number | null
+  note: string
+}
+
+export type QuoteSourceLedger = {
+  version: 'quote-source-ledger-v1'
+  generatedAt: string
+  tradeSourceId: string
+  tradePrice: number
+  consensus: {
+    price: number | null
+    deviationPercent: number | null
+    status: 'aligned' | 'diverged' | 'unknown'
+  }
+  entries: QuoteSourceLedgerEntry[]
+  warnings: string[]
+}
+
 export type HistoryPoint = {
   timestamp: string
   sourceKind: QuoteSourceKind
@@ -71,6 +106,9 @@ export type HistoryPoint = {
   referenceAnchorPrice: number | null
   referenceAu9999Price: number | null
   referenceAutdPrice: number | null
+  referenceZheshangPrice?: number | null
+  referenceDomesticGoldPrice?: number | null
+  referenceInternationalGoldPrice?: number | null
 }
 
 export type AlertLevel = 'normal' | 'watch' | 'elevated' | 'critical'
@@ -240,6 +278,52 @@ export type MarketFactorImpact = 'supportive' | 'neutral' | 'pressure' | 'unknow
 
 export type MarketFactorStatus = 'live' | 'derived' | 'unavailable'
 
+export type FactorCandleProductionUsage =
+  | 'learning_only_mirror'
+  | 'production_disabled'
+  | 'production_eligible'
+
+export type MarketFactorSourceUsage =
+  | 'production_realtime'
+  | 'mirror_learning'
+  | 'production_disabled'
+  | 'derived'
+  | 'unknown'
+
+export type FactorCandle = {
+  symbol: string
+  date: string
+  time: string
+  frequency: 'daily' | 'monthly' | 'weekly' | 'unknown'
+  open: number
+  high: number
+  low: number
+  close: number
+  value: number
+  source: string
+  productionUsage: FactorCandleProductionUsage
+  sourceUsage: MarketFactorSourceUsage
+  isProductionEligible: boolean
+}
+
+export type MacroRegimeStatus = 'supportive' | 'neutral' | 'pressure' | 'conflicted' | 'unknown'
+
+export type MacroRegimeEvidence = {
+  status: MacroRegimeStatus
+  scoreImpact: number
+  confidence: number
+  supportingReasons: string[]
+  opposingReasons: string[]
+  sourceUsage: MarketFactorSourceUsage
+  isProductionEligible: boolean
+  stalenessWarning: string
+  sourceSummary: string
+  inflationPhase: 'accelerating' | 'sticky' | 'cooling' | 'unknown'
+  realRateTrend: 'rising' | 'falling' | 'flat' | 'unknown'
+  usdCnyAlignment: 'cny_gold_support' | 'cny_gold_pressure' | 'neutral' | 'unknown'
+  cmeBreakoutQuality: 'confirmed' | 'not_confirmed' | 'unavailable' | 'unknown'
+}
+
 export type MarketFactor = {
   id: string
   label: string
@@ -251,6 +335,8 @@ export type MarketFactor = {
   status: MarketFactorStatus
   summary: string
   updatedAt: string | null
+  sourceUsage?: MarketFactorSourceUsage
+  isProductionEligible?: boolean
 }
 
 export type SentimentFactor = {
@@ -307,6 +393,11 @@ export type BacktestSnapshot = {
   confluenceScore?: number | null
   confluenceConflictLevel?: 'none' | 'mild' | 'severe' | null
   macroRegime?: 'supportive' | 'neutral' | 'pressure' | 'unknown'
+  macroRegimeEvidenceStatus?: MacroRegimeStatus | null
+  inflationPhase?: MacroRegimeEvidence['inflationPhase'] | null
+  realRateTrend?: MacroRegimeEvidence['realRateTrend'] | null
+  usdCnyAlignment?: MacroRegimeEvidence['usdCnyAlignment'] | null
+  cmeBreakoutQuality?: MacroRegimeEvidence['cmeBreakoutQuality'] | null
   modelProbability?: number | null
   modelConfidence?: number | null
   externalModelStatus?: ExternalModelAdvisor['status'] | null
@@ -365,7 +456,19 @@ export type TripleBarrierLabel = {
 export type BacktestBucket = {
   key: string
   label: string
-  dimension: 'signal' | 'score' | 'valuation' | 'session' | 'pattern' | 'macro' | 'confluence'
+  dimension:
+    | 'signal'
+    | 'score'
+    | 'valuation'
+    | 'session'
+    | 'pattern'
+    | 'macro'
+    | 'confluence'
+    | 'macro_regime'
+    | 'inflation_phase'
+    | 'real_rate_trend'
+    | 'usd_cny_alignment'
+    | 'cme_breakout_quality'
   sampleSize: number
   qualifiedSamples: number
   winRate: number | null
@@ -400,6 +503,11 @@ export type ExternalModelBucketDimension =
   | 'event'
   | 'confluence'
   | 'macro'
+  | 'macro_regime'
+  | 'inflation_phase'
+  | 'real_rate_trend'
+  | 'usd_cny_alignment'
+  | 'cme_breakout_quality'
   | 'valuation'
   | 'source_health'
   | 'horizon'
@@ -629,6 +737,56 @@ export type DecisionOverlay = {
   warnings: string[]
 }
 
+export type ProbabilityDisplayMode = 'hidden' | 'tendency' | 'calibrated'
+
+export type CalibrationStatus = {
+  sampleSize: number
+  brierScore: number | null
+  sampleStatus: FinalDecision['sampleStatus']
+  canShowNumericProbability: boolean
+  reason: string
+}
+
+export type DecisionProbabilityDisplay = {
+  mode: ProbabilityDisplayMode
+  value: number | null
+  label: string
+  reason: string
+}
+
+export type LevelValidationItem = {
+  price: number | null
+  status: 'valid' | 'invalid' | 'missing'
+  reason: string
+}
+
+export type LevelValidation = {
+  support: LevelValidationItem
+  resistance: LevelValidationItem
+  trigger: LevelValidationItem
+  stopLoss: LevelValidationItem
+  takeProfit1: LevelValidationItem
+}
+
+export type DecisionViewModel = {
+  version: 'decision-view-v1'
+  action: FinalDecisionAction
+  displayGrade: FinalDecision['signalGrade']
+  primaryInstruction: string
+  beginnerInstruction: string
+  canAct: boolean
+  triggerPrice: number | null
+  stopLoss: number | null
+  takeProfit1: number | null
+  riskRewardRatio: number | null
+  probabilityDisplay: DecisionProbabilityDisplay
+  calibrationStatus: CalibrationStatus
+  levelValidation: LevelValidation
+  sourceWarnings: string[]
+  blockerSummary: string
+  updatedAt: string
+}
+
 export type PriceLevelRole =
   | 'support'
   | 'resistance'
@@ -818,6 +976,7 @@ export type MarketContext = {
     usdCny: MarketFactor
   }
   macroFactors: MarketFactor[]
+  macroRegimeEvidence?: MacroRegimeEvidence
   sentiment: {
     news: SentimentFactor
     blogger: SentimentFactor
@@ -844,6 +1003,7 @@ export type OpportunitySignal = {
   knowledgeRuleAudit: KnowledgeRuleAudit
   canonicalForecast: CanonicalForecast
   decisionOverlay: DecisionOverlay
+  decisionView: DecisionViewModel
   finalDecision: FinalDecision
   tradePlan: TradePlan
   confluence: MultiTimeframeConfluence
@@ -904,6 +1064,7 @@ export type QuoteApiResponse = {
   sourceName: string
   sourceKind: QuoteSourceKind
   sourceStatus: SourceStatus
+  sourceLedger: QuoteSourceLedger
   dayRange: {
     low: number
     high: number
