@@ -740,8 +740,7 @@ function calculateConsensusPrice(values: Array<number | null>) {
   return (validValues[middle - 1] + validValues[middle]) / 2
 }
 
-function getChinaGoldTradingSession() {
-  const now = new Date()
+export function getChinaGoldTradingSession(now = new Date()) {
   const chinaTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }))
   const day = chinaTime.getDay()
   const minutes = chinaTime.getHours() * 60 + chinaTime.getMinutes()
@@ -755,16 +754,14 @@ function getChinaGoldTradingSession() {
   }
 
   const sessions = [
-    [9 * 60, 11 * 60 + 30],
-    [13 * 60 + 30, 15 * 60 + 30],
-    [20 * 60, 22 * 60 + 30],
+    [9 * 60 + 10, 22 * 60 + 30],
   ] as const
   const isTradingTime = sessions.some(([start, end]) => minutes >= start && minutes <= end)
   return {
     isTradingTime,
     status: isTradingTime ? 'trading' as const : 'closed' as const,
     note: isTradingTime
-      ? '工作日交易时段，要求主报价和多源锚点保持新鲜一致。'
-      : '当前不在主要交易时段，允许报价源短暂停更。',
+      ? '工银积存金工作日电子银行交易/监控时段，要求主报价和多源锚点保持新鲜一致。'
+      : '当前不在工银积存金主要交易/监控时段，允许报价源短暂停更。',
   }
 }
