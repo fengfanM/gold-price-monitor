@@ -357,6 +357,7 @@ export function evaluateOpportunity(input: {
     canonicalForecast: rawCanonicalForecast,
     finalDecision,
     latestQuote,
+    marketContext,
     probabilityModel,
     sourceStatus,
     tradePlan,
@@ -548,11 +549,7 @@ function buildCanonicalForecast(input: {
       invalidation: stopLoss ?? patternInvalidation,
       targets,
     },
-    successRate: {
-      value: roundProbability(prediction.probability),
-      source: 'probabilityModel',
-      label: 'TP1 先达概率，不再使用形态识别置信度冒充成功率。',
-    },
+    successRate: buildCanonicalSuccessRate(finalDecision, prediction),
     primaryPatternId: primaryPattern?.id ?? null,
     primaryPatternLabel: primaryPattern?.label ?? null,
     warnings: compact([
@@ -660,6 +657,7 @@ function buildDecisionViewModel(input: {
   canonicalForecast: CanonicalForecast
   finalDecision: FinalDecision
   latestQuote: QuoteSample
+  marketContext: MarketContext
   probabilityModel: OpportunitySignal['probabilityModel']
   sourceStatus: SourceStatus
   tradePlan: TradePlan
@@ -668,6 +666,7 @@ function buildDecisionViewModel(input: {
     canonicalForecast,
     finalDecision,
     latestQuote,
+    marketContext,
     probabilityModel,
     sourceStatus,
     tradePlan,
@@ -676,6 +675,18 @@ function buildDecisionViewModel(input: {
   const calibrationStatus = buildCalibrationStatus(finalDecision, prediction)
   const probabilityDisplay = buildDecisionProbabilityDisplay(finalDecision, prediction, calibrationStatus)
   const levelValidation = buildLevelValidation(canonicalForecast, latestQuote.price)
+  const executionState = deriveExecutionState(finalDecision, tradePlan, levelValidation, latestQuote.price)
+  const actionAllowed =
+    finalDecision.strongReminderAllowed &&
+    executionState === 'trigger_armed' &&
+    Boolean(tradePlan.triggerPrice) &&
+    Boolean(tradePlan.stopLoss) &&
+    Boolean(tradePlan.takeProfit1) &&
+    tradePlan.riskRewardRatio !== null &&
+    tradePlan.riskRewardRatio >= 2.5
+  const actionBlockedReason = actionAllowed ? null : buildActionBlockedReason(executionState, finalDecision, levelValidation)
+  const backtestValidity = buildDecisionBacktestValidity(calibrationStatus)
+  const sourceHealth = buildSourceHealthViewModel(sourceStatus, latestQuote, marketContext)
   const sourceWarnings = compact([
     sourceStatus.stale ? '主报价源陈旧，禁止把当前读数当作实时买点依据。' : null,
     sourceStatus.active === 'fallback' ? '当前使用备用行情源，需等官方源恢复后再复核。' : null,
@@ -686,21 +697,25 @@ function buildDecisionViewModel(input: {
       ? '缺少上金所/AU9999 锚点，无法确认当前价格是否真的便宜。'
       : null,
   ])
-  const canAct =
-    finalDecision.strongReminderAllowed &&
-    Boolean(tradePlan.triggerPrice) &&
-    Boolean(tradePlan.stopLoss) &&
-    Boolean(tradePlan.takeProfit1) &&
-    tradePlan.riskRewardRatio !== null &&
-    tradePlan.riskRewardRatio >= 2.5
 
   return {
-    version: 'decision-view-v1',
-    action: finalDecision.action,
+    version: 'decision-view-v2',
+    action: actionAllowed ? finalDecision.action : executionState === 'reduce_position' ? 'reduce' : executionState === 'no_trade' || executionState === 'invalidated' ? 'avoid' : 'watch',
     displayGrade: finalDecision.signalGrade,
     primaryInstruction: finalDecision.userAdvice,
     beginnerInstruction: finalDecision.beginnerAdvice,
-    canAct,
+    canAct: actionAllowed,
+    executionState,
+    singleCommand: buildSingleCommand(executionState, tradePlan, levelValidation, actionBlockedReason),
+    actionAllowed,
+    actionBlockedReason,
+    displayGuards: compact([
+      probabilityDisplay.mode !== 'calibrated' ? probabilityDisplay.reason : null,
+      backtestValidity.metricsEnabled ? null : backtestValidity.freezeReason,
+      ...sourceWarnings,
+      finalDecision.blockedReasons[0] ?? null,
+      executionState === 'trigger_missed' ? '原触发价已经失效，不能追价补票。' : null,
+    ]),
     triggerPrice: tradePlan.triggerPrice,
     stopLoss: tradePlan.stopLoss,
     takeProfit1: tradePlan.takeProfit1,
@@ -708,9 +723,175 @@ function buildDecisionViewModel(input: {
     probabilityDisplay,
     calibrationStatus,
     levelValidation,
+    validatedLevels: levelValidation,
+    backtestValidity,
+    sourceHealth,
     sourceWarnings,
     blockerSummary: finalDecision.blockedReasons[0] ?? finalDecision.downgradeReasons[0] ?? '暂无硬性拦截，继续按交易计划复核。',
     updatedAt: canonicalForecast.generatedAt,
+  }
+}
+
+function buildCanonicalSuccessRate(
+  finalDecision: FinalDecision,
+  prediction: ProbabilityPrediction,
+): CanonicalForecast['successRate'] {
+  if (!canShowCalibratedProbability(finalDecision, prediction)) {
+    return {
+      value: null,
+      source: 'unavailable',
+      label: '样本不足或校准未通过，不展示 TP1 先达概率。',
+    }
+  }
+  return {
+    value: roundProbability(prediction.probability),
+    source: 'probabilityModel',
+    label: '校准后 TP1 先达概率。',
+  }
+}
+
+function canShowCalibratedProbability(
+  finalDecision: FinalDecision,
+  prediction: ProbabilityPrediction,
+) {
+  const hasUsableSample = finalDecision.sampleStatus === 'usable' || finalDecision.sampleStatus === 'robust'
+  const brierOk = prediction.brierScore !== null && Number.isFinite(prediction.brierScore) && prediction.brierScore <= 0.24
+  return hasUsableSample && brierOk && !finalDecision.hardGates.some((gate) => gate.status === 'block')
+}
+
+function deriveExecutionState(
+  finalDecision: FinalDecision,
+  tradePlan: TradePlan,
+  levelValidation: DecisionViewModel['levelValidation'],
+  currentPrice: number,
+): DecisionViewModel['executionState'] {
+  if (tradePlan.action === 'take_profit_or_reduce' || finalDecision.action === 'reduce') {
+    return 'reduce_position'
+  }
+  if (levelValidation.trigger.status === 'invalid' && tradePlan.triggerPrice !== null && tradePlan.triggerPrice <= currentPrice) {
+    return 'trigger_missed'
+  }
+  if (finalDecision.signalGrade === 'blocked' || finalDecision.action === 'avoid') {
+    return 'no_trade'
+  }
+  if (levelValidation.stopLoss.status === 'valid' && levelValidation.stopLoss.price !== null && currentPrice <= levelValidation.stopLoss.price) {
+    return 'invalidated'
+  }
+  if (levelValidation.trigger.status === 'valid' && finalDecision.action === 'confirm_then_enter') {
+    return 'trigger_armed'
+  }
+  if (levelValidation.trigger.status === 'valid') {
+    return 'waiting_for_trigger'
+  }
+  return 'watch_only'
+}
+
+function buildActionBlockedReason(
+  executionState: DecisionViewModel['executionState'],
+  finalDecision: FinalDecision,
+  levelValidation: DecisionViewModel['levelValidation'],
+) {
+  if (executionState === 'trigger_missed') {
+    return levelValidation.trigger.reason || '原触发价已经低于或等于当前价，追入会破坏计划赔率。'
+  }
+  if (executionState === 'invalidated') {
+    return '当前价已经触及或跌破失效/止损条件，计划作废。'
+  }
+  if (executionState === 'no_trade') {
+    return finalDecision.blockedReasons[0] ?? '硬闸门未通过，禁止开新仓。'
+  }
+  if (executionState === 'watch_only' || executionState === 'waiting_for_trigger') {
+    return finalDecision.downgradeReasons[0] ?? '仍缺少触发确认，先观察不追价。'
+  }
+  return null
+}
+
+function buildSingleCommand(
+  executionState: DecisionViewModel['executionState'],
+  tradePlan: TradePlan,
+  levelValidation: DecisionViewModel['levelValidation'],
+  actionBlockedReason: string | null,
+) {
+  switch (executionState) {
+    case 'trigger_missed':
+      return `机会已错过，不追；等待回踩重新站稳或出现新结构。${actionBlockedReason ?? ''}`
+    case 'trigger_armed':
+      return `只在触发价 ${formatMaybeCurrency(tradePlan.triggerPrice)} 有效确认后分批参与，跌破 ${formatMaybeCurrency(tradePlan.stopLoss)} 退出。`
+    case 'waiting_for_trigger':
+      return `继续等触发价 ${formatMaybeCurrency(tradePlan.triggerPrice)}，未确认前不开新仓。`
+    case 'invalidated':
+      return `计划已失效，先退出观察；${actionBlockedReason ?? levelValidation.stopLoss.reason}`
+    case 'reduce_position':
+      return '优先止盈或降仓，不再把当前结构当作新买点。'
+    case 'no_trade':
+      return `禁止开新仓；${actionBlockedReason ?? '硬闸门未通过。'}`
+    case 'watch_only':
+    default:
+      return `只观察，不开新仓；${actionBlockedReason ?? '等待更清晰确认。'}`
+  }
+}
+
+function buildDecisionBacktestValidity(
+  calibrationStatus: DecisionViewModel['calibrationStatus'],
+): DecisionViewModel['backtestValidity'] {
+  const minSamplesRequired = 30
+  const metricsEnabled = calibrationStatus.canShowNumericProbability
+  return {
+    completeSamples: calibrationStatus.sampleSize,
+    incompleteSampleRate: null,
+    metricsEnabled,
+    freezeReason: metricsEnabled ? null : calibrationStatus.reason,
+    minSamplesRequired,
+  }
+}
+
+function buildSourceHealthViewModel(
+  sourceStatus: SourceStatus,
+  latestQuote: QuoteSample,
+  marketContext: MarketContext,
+): DecisionViewModel['sourceHealth'] {
+  const activeChannel = getActiveChannelStatus(sourceStatus)
+  const tradeSourceStatus: DecisionViewModel['sourceHealth']['tradeSourceStatus'] = sourceStatus.stale
+    ? 'stale'
+    : sourceStatus.active === 'fallback'
+      ? 'fallback'
+      : activeChannel?.status === 'healthy'
+        ? 'live'
+        : 'offline'
+  const calibration = latestQuote.marketReference.calibration
+  const referenceSourceStatus: DecisionViewModel['sourceHealth']['referenceSourceStatus'] = calibration.withinReferenceRange === false
+    ? 'diverged'
+    : calibration.premiumPercent === null
+      ? 'missing'
+      : 'live'
+  const providerTotal = marketContext.providerHealth.length
+  const providerLive = marketContext.providerHealth.filter((provider) => provider.status === 'live').length
+  const providerProbeStatus: DecisionViewModel['sourceHealth']['providerProbeStatus'] = providerTotal === 0
+    ? 'missing'
+    : providerLive === providerTotal
+      ? 'live'
+      : 'partial'
+  const macroMirrorStatus: DecisionViewModel['sourceHealth']['macroMirrorStatus'] =
+    marketContext.macroRegimeEvidence?.isProductionEligible ||
+    marketContext.macroFactors.some((factor) => factor.isProductionEligible === true || factor.sourceUsage === 'production_realtime')
+      ? 'production_eligible'
+      : marketContext.macroFactors.length > 0
+        ? 'learning_only'
+        : 'unknown'
+  const warnings = compact([
+    tradeSourceStatus !== 'live' ? '主交易报价不是实时健康状态。' : null,
+    referenceSourceStatus === 'missing' ? '缺少上金所/AU9999 等参考锚点。' : null,
+    referenceSourceStatus === 'diverged' ? '交易价与参考锚点偏离过大。' : null,
+    providerProbeStatus === 'missing' ? '专业 provider 探针暂无可用结论。' : null,
+    macroMirrorStatus === 'learning_only' ? '宏观镜像仅用于离线校准，不作为实时买点依据。' : null,
+  ])
+  return {
+    tradeSourceStatus,
+    referenceSourceStatus,
+    macroMirrorStatus,
+    providerProbeStatus,
+    canUseForStrongSignal: tradeSourceStatus === 'live' && referenceSourceStatus === 'live' && providerProbeStatus !== 'missing',
+    warnings,
   }
 }
 
@@ -721,10 +902,7 @@ function buildCalibrationStatus(
   const hasUsableSample = finalDecision.sampleStatus === 'usable' || finalDecision.sampleStatus === 'robust'
   const hasBrier = prediction.brierScore !== null && Number.isFinite(prediction.brierScore)
   const brierOk = hasBrier && prediction.brierScore !== null && prediction.brierScore <= 0.24
-  const canShowNumericProbability =
-    hasUsableSample &&
-    brierOk &&
-    !finalDecision.hardGates.some((gate) => gate.status === 'block')
+  const canShowNumericProbability = canShowCalibratedProbability(finalDecision, prediction)
   const reason = canShowNumericProbability
     ? `样本 ${prediction.sampleSize} 个，Brier ${prediction.brierScore?.toFixed(3)}，允许展示校准后概率。`
     : !hasUsableSample
@@ -1739,6 +1917,7 @@ function buildFinalDecision(input: {
             status: 'pass',
             reason: `风险收益比 ${tradePlan.riskRewardRatio}:1，满足强提醒赔率要求。`,
           },
+    buildTradePlanLevelGate(tradePlan, latestQuote.price),
     psychology.action === 'stand_down' || psychology.action === 'review_only'
       ? {
           id: 'discipline',
@@ -1951,6 +2130,55 @@ function getFinalDecisionConfidenceGrade(
     return 'medium'
   }
   return 'high'
+}
+
+function buildTradePlanLevelGate(tradePlan: TradePlan, currentPrice: number): FinalDecisionGate {
+  if (tradePlan.action === 'take_profit_or_reduce' || tradePlan.action === 'stand_aside') {
+    return {
+      id: 'trade-plan-levels',
+      label: '计划价位',
+      status: 'pass',
+      reason: '当前不是新增买入计划，不按做多触发价放大信号。',
+    }
+  }
+  if (tradePlan.triggerPrice !== null && tradePlan.triggerPrice <= currentPrice) {
+    return {
+      id: 'trade-plan-levels',
+      label: '计划价位',
+      status: 'block',
+      reason: '买入触发价已低于或等于当前价，机会视为已错过，禁止追价。',
+    }
+  }
+  if (tradePlan.stopLoss !== null && tradePlan.stopLoss >= currentPrice) {
+    return {
+      id: 'trade-plan-levels',
+      label: '计划价位',
+      status: 'block',
+      reason: '止损价不在当前价下方，做多计划失效。',
+    }
+  }
+  if (tradePlan.takeProfit1 !== null && tradePlan.takeProfit1 <= currentPrice) {
+    return {
+      id: 'trade-plan-levels',
+      label: '计划价位',
+      status: 'block',
+      reason: 'TP1 不在当前价上方，风险收益计划不可执行。',
+    }
+  }
+  if (tradePlan.triggerPrice === null || tradePlan.stopLoss === null || tradePlan.takeProfit1 === null) {
+    return {
+      id: 'trade-plan-levels',
+      label: '计划价位',
+      status: 'watch',
+      reason: '缺少触发、止损或 TP1，不能生成可执行买点。',
+    }
+  }
+  return {
+    id: 'trade-plan-levels',
+    label: '计划价位',
+    status: 'pass',
+    reason: '触发价、止损和 TP1 相对当前价有效。',
+  }
 }
 
 function mapFinalDecisionAction(

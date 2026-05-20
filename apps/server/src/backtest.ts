@@ -23,6 +23,7 @@ import type {
 } from './types.js'
 
 const MIN_WEIGHTED_SAMPLES = 30
+const MAX_WEIGHTED_INCOMPLETE_RATE = 0.25
 
 export type StrategyReplayPoint = {
   quote: QuoteSample
@@ -116,6 +117,45 @@ export function replayOpportunityStrategy(
   return results
 }
 
+export function buildBacktestSnapshotsFromHistory(
+  history: HistoryPoint[],
+  sourceStatus: SourceStatus = createHistoricalSourceStatus(),
+): BacktestSnapshot[] {
+  const quotes = selectReplayHistoryPoints(history).map(historyPointToQuote)
+  return replayOpportunityStrategy(quotes, sourceStatus).map(({ quote, signal }) => ({
+    updatedAt: new Date().toISOString(),
+    quoteTimestamp: quote.fetchedAt,
+    price: quote.price,
+    sampleOrigin: 'historical',
+    signalScore: signal.score,
+    signalLevel: signal.level,
+    backtest: signal.marketContext.backtest,
+    valuation: signal.valuation,
+    primaryPatternKind: signal.patternSignals[0]?.kind ?? null,
+    confluenceScore: signal.confluence.score,
+    confluenceConflictLevel: signal.confluence.conflictLevel,
+    macroRegime: 'unknown',
+    macroRegimeEvidenceStatus: null,
+    inflationPhase: null,
+    realRateTrend: null,
+    usdCnyAlignment: null,
+    cmeBreakoutQuality: null,
+    modelProbability: signal.probabilityModel.primaryPrediction.probability,
+    modelConfidence: signal.probabilityModel.primaryPrediction.confidence,
+    externalModelStatus: null,
+    externalModelProvider: null,
+    externalModelName: null,
+    externalModelHorizonMinutes: null,
+    externalModelUpProbability: null,
+    externalModelConfidence: null,
+    externalModelExpectedReturnPercent: null,
+    externalModelCandidates: [],
+    eventRiskLevel: signal.eventRisk.level,
+    psychologyLevel: signal.psychology.level,
+    sourceHealth: 'healthy',
+  }))
+}
+
 export function buildBacktestMonitor(
   snapshots: BacktestSnapshot[],
   horizonMinutes = 60,
@@ -162,8 +202,17 @@ export function buildBacktestMonitor(
   const evaluatedSamples = allEvaluatedSamples.filter((sample) => {
     return sample.signalScore >= signalThreshold || sample.signalLevel !== 'none'
   })
-  const returns = evaluatedSamples.map((sample) => sample.returnPercent)
-  const baselineReturns = allEvaluatedSamples.map((sample) => sample.returnPercent)
+  const completeEvaluatedSamples = evaluatedSamples.filter((sample) => sample.complete !== false)
+  const completeBaselineSamples = allEvaluatedSamples.filter((sample) => sample.complete !== false)
+  const qualifiedIncompleteSampleRate = evaluatedSamples.length > 0
+    ? evaluatedSamples.filter((sample) => sample.complete === false).length / evaluatedSamples.length
+    : null
+  const metricsFrozen = completeEvaluatedSamples.length < MIN_WEIGHTED_SAMPLES
+  const freezeReason = metricsFrozen
+    ? `完整样本 ${completeEvaluatedSamples.length}/${MIN_WEIGHTED_SAMPLES}，样本未完成，不展示胜率/PF/回测增益。`
+    : null
+  const returns = metricsFrozen ? [] : completeEvaluatedSamples.map((sample) => sample.returnPercent)
+  const baselineReturns = metricsFrozen ? [] : completeBaselineSamples.map((sample) => sample.returnPercent)
   const winRate = returns.length > 0
     ? returns.filter((value) => value > 0).length / returns.length
     : null
@@ -181,8 +230,8 @@ export function buildBacktestMonitor(
   const informationRatio = averageReturn !== null
     ? ratioToDeviation(averageReturn, returns)
     : null
-  const maxDrawdown = evaluatedSamples.length > 0
-    ? Math.min(...evaluatedSamples.map((sample) => sample.maxDrawdown))
+  const maxDrawdown = returns.length > 0
+    ? Math.min(...completeEvaluatedSamples.map((sample) => sample.maxDrawdown))
     : null
   const failureSamples = evaluatedSamples
     .filter((sample) => sample.returnPercent < 0 || sample.maxDrawdown <= -0.01)
@@ -198,16 +247,23 @@ export function buildBacktestMonitor(
 
   return {
     updatedAt: new Date().toISOString(),
+    horizonMinutes,
     sampleSize: sorted.length,
     allEvaluatedSamples: allEvaluatedSamples.length,
     evaluatedSamples: evaluatedSamples.length,
+    completeEvaluatedSamples: completeEvaluatedSamples.length,
+    metricsFrozen,
+    freezeReason,
     signalThreshold,
     winRate,
     baselineWinRate,
     averageReturn,
     expectancy,
     profitFactor,
-    reliability: calculateReliability(evaluatedSamples.length, winRate, profitFactor),
+    reliability: metricsFrozen ? 28 : applyIncompleteReliabilityPenalty(
+      calculateReliability(completeEvaluatedSamples.length, winRate, profitFactor),
+      qualifiedIncompleteSampleRate,
+    ),
     sortinoRatio,
     informationRatio,
     maxDrawdown,
@@ -223,8 +279,12 @@ export function buildBacktestMonitor(
     incompleteSampleRate,
     failureAttribution,
     summary: buildMonitorSummary({
+      horizonMinutes,
       allEvaluatedSamples: allEvaluatedSamples.length,
       evaluatedSamples: evaluatedSamples.length,
+      completeEvaluatedSamples: completeEvaluatedSamples.length,
+      metricsFrozen,
+      freezeReason,
       winRate,
       baselineWinRate,
       averageReturn,
@@ -1076,7 +1136,17 @@ function summarizeBucket(
   const incompleteRate = samples.length > 0
     ? samples.filter((sample) => sample.complete === false).length / samples.length
     : null
-  const reliability = calculateReliability(completeQualified.length, winRate, profitFactor)
+  const metricsFrozen = completeQualified.length < MIN_WEIGHTED_SAMPLES
+  const freezeReason = metricsFrozen
+    ? `完整样本 ${completeQualified.length}/${MIN_WEIGHTED_SAMPLES}，仅展示诊断，不参与概率加权。`
+    : null
+  const displayWinRate = metricsFrozen ? null : winRate
+  const displayBaselineWinRate = metricsFrozen ? null : baselineWinRate
+  const displayAverageReturn = metricsFrozen ? null : averageReturn
+  const displayProfitFactor = metricsFrozen ? null : profitFactor
+  const reliability = metricsFrozen
+    ? 28
+    : applyIncompleteReliabilityPenalty(calculateReliability(completeQualified.length, winRate, profitFactor), incompleteRate)
   const label = bucketLabelFromKey(key)
   return {
     key,
@@ -1084,10 +1154,13 @@ function summarizeBucket(
     dimension,
     sampleSize: samples.length,
     qualifiedSamples: qualified.length,
-    winRate,
-    baselineWinRate,
-    averageReturn,
-    profitFactor,
+    completeQualifiedSamples: completeQualified.length,
+    metricsFrozen,
+    freezeReason,
+    winRate: displayWinRate,
+    baselineWinRate: displayBaselineWinRate,
+    averageReturn: displayAverageReturn,
+    profitFactor: displayProfitFactor,
     maxDrawdown,
     mae,
     mfe,
@@ -1097,7 +1170,7 @@ function summarizeBucket(
     timeoutRate,
     incompleteRate,
     reliability,
-    summary: `${label}：合格 ${qualified.length}/${samples.length}，完整样本 ${completeQualified.length}，TP1 ${formatPercent(tp1HitRate)}，止损 ${formatPercent(stopLossHitRate)}，未完成 ${formatPercent(incompleteRate)}，PF ${formatRatio(profitFactor)}，MAE ${formatPercent(mae)}，MFE ${formatPercent(mfe)}。`,
+    summary: `${label}：合格 ${qualified.length}/${samples.length}，完整样本 ${completeQualified.length}，TP1 ${formatPercent(tp1HitRate)}，止损 ${formatPercent(stopLossHitRate)}，未完成 ${formatPercent(incompleteRate)}，PF ${formatRatio(displayProfitFactor)}，MAE ${formatPercent(mae)}，MFE ${formatPercent(mfe)}。${freezeReason ?? ''}`,
   }
 }
 
@@ -1348,6 +1421,99 @@ function buildReplayStats(history: HistoryPoint[], latestQuote: QuoteSample): Qu
   }
 }
 
+function selectReplayHistoryPoints(history: HistoryPoint[]) {
+  const selected = new Map<number, HistoryPoint>()
+  for (const point of history) {
+    const timestampMs = new Date(point.timestamp).getTime()
+    if (!Number.isFinite(timestampMs) || !Number.isFinite(point.price) || point.price <= 0) {
+      continue
+    }
+    const minuteBucket = Math.floor(timestampMs / 60_000) * 60_000
+    selected.set(minuteBucket, point)
+  }
+  return [...selected.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map((entry) => entry[1])
+}
+
+function historyPointToQuote(point: HistoryPoint): QuoteSample {
+  const anchorPrice = point.referenceAnchorPrice ?? point.referenceAu9999Price ?? point.referenceAutdPrice ?? null
+  return {
+    symbol: 'ICBC_ACCUMULATION_GOLD',
+    currency: 'CNY',
+    unit: '元/克',
+    price: point.price,
+    activePrice: point.activePrice,
+    regularPrice: point.regularPrice,
+    sellPrice: point.sellPrice,
+    dayLow: point.dayLow,
+    dayHigh: point.dayHigh,
+    updatedAt: point.timestamp,
+    fetchedAt: point.timestamp,
+    productName: '工银积存金',
+    productCode: 'AU9999_ACCUMULATION',
+    sourceKind: point.sourceKind,
+    sourceName: point.sourceKind === 'official' ? '历史工银主行情' : '历史备用行情',
+    marketReference: {
+      sourceName: '历史回放参考锚',
+      sourceUrl: '',
+      isDelayed: true,
+      tradingDate: null,
+      au9999: referenceQuote('AU9999', point.referenceAu9999Price),
+      autd: referenceQuote('Au(T+D)', point.referenceAutdPrice),
+      domesticReferences: [
+        referenceQuote('ZHESHANG_ACCUMULATION_GOLD', point.referenceZheshangPrice),
+        referenceQuote('JO_9753', point.referenceDomesticGoldPrice),
+      ].filter((item): item is NonNullable<ReturnType<typeof referenceQuote>> => item !== null),
+      consensusPrice: anchorPrice,
+      consensusDeviationPercent: anchorPrice ? (point.price - anchorPrice) / anchorPrice : null,
+      calibration: {
+        anchorSymbol: anchorPrice ? 'historical_anchor' : null,
+        anchorPrice,
+        spread: anchorPrice ? point.price - anchorPrice : null,
+        premiumPercent: anchorPrice ? (point.price - anchorPrice) / anchorPrice : null,
+        withinReferenceRange: null,
+        note: '由本地历史行情回放生成，仅用于样本冷启动与校准，不代表新实时报价。',
+      },
+    },
+  }
+}
+
+function referenceQuote(symbol: string, price: number | null | undefined) {
+  if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) {
+    return null
+  }
+  return {
+    symbol,
+    label: symbol,
+    latestPrice: price,
+    highPrice: price,
+    lowPrice: price,
+    openPrice: price,
+    updatedAt: null,
+  }
+}
+
+function createHistoricalSourceStatus(): SourceStatus {
+  return {
+    active: 'official',
+    stale: false,
+    lastSuccessAt: null,
+    official: {
+      status: 'healthy',
+      lastSuccessAt: null,
+      lastFailureAt: null,
+      lastError: null,
+    },
+    fallback: {
+      status: 'unknown',
+      lastSuccessAt: null,
+      lastFailureAt: null,
+      lastError: null,
+    },
+  }
+}
+
 function quoteToHistoryPoint(quote: QuoteSample): HistoryPoint {
   return {
     timestamp: quote.fetchedAt,
@@ -1406,16 +1572,20 @@ function ratioToDeviation(averageReturn: number, values: number[]) {
 function chooseSignalThreshold(samples: WalkForwardSample[]) {
   const strongThreshold = 60
   const watchThreshold = 45
-  if (samples.filter((sample) => sample.signalScore >= strongThreshold).length >= 5) {
+  const completeSamples = samples.filter((sample) => sample.complete !== false)
+  const thresholdSamples = completeSamples.length >= MIN_WEIGHTED_SAMPLES
+    ? completeSamples
+    : samples
+  if (thresholdSamples.filter((sample) => sample.signalScore >= strongThreshold).length >= MIN_WEIGHTED_SAMPLES) {
     return strongThreshold
   }
-  if (samples.filter((sample) => sample.signalScore >= watchThreshold || sample.signalLevel !== 'none').length >= 3) {
+  if (thresholdSamples.filter((sample) => sample.signalScore >= watchThreshold || sample.signalLevel !== 'none').length >= 3) {
     return watchThreshold
   }
-  if (samples.length < 3) {
+  if (thresholdSamples.length < 3) {
     return watchThreshold
   }
-  const sortedScores = samples.map((sample) => sample.signalScore).sort((left, right) => right - left)
+  const sortedScores = thresholdSamples.map((sample) => sample.signalScore).sort((left, right) => right - left)
   return Math.max(watchThreshold, sortedScores[Math.min(sortedScores.length - 1, Math.floor(sortedScores.length * 0.4))])
 }
 
@@ -1452,9 +1622,24 @@ function calculateReliability(
   return evaluatedSamples < MIN_WEIGHTED_SAMPLES ? Math.min(raw, 49) : raw
 }
 
+function applyIncompleteReliabilityPenalty(
+  reliability: number,
+  incompleteRate: number | null,
+) {
+  if (incompleteRate === null || incompleteRate <= MAX_WEIGHTED_INCOMPLETE_RATE) {
+    return reliability
+  }
+  const penalty = Math.round(Math.min(18, (incompleteRate - MAX_WEIGHTED_INCOMPLETE_RATE) * 45))
+  return Math.max(35, reliability - penalty)
+}
+
 function buildMonitorSummary(input: {
+  horizonMinutes: number
   allEvaluatedSamples: number
   evaluatedSamples: number
+  completeEvaluatedSamples: number
+  metricsFrozen: boolean
+  freezeReason: string | null
   winRate: number | null
   baselineWinRate: number | null
   averageReturn: number | null
@@ -1465,17 +1650,24 @@ function buildMonitorSummary(input: {
   const {
     allEvaluatedSamples,
     evaluatedSamples,
+    completeEvaluatedSamples,
+    metricsFrozen,
+    freezeReason,
     winRate,
     baselineWinRate,
     averageReturn,
     maxDrawdown,
     profitFactor,
     signalThreshold,
+    horizonMinutes,
   } = input
   if (evaluatedSamples < 3) {
-    return `选择性 Walk-forward 已启用，当前合格信号 ${evaluatedSamples}/${allEvaluatedSamples} 个，样本仍不足，暂不放大强信号。`
+    return `${horizonMinutes} 分钟选择性 Walk-forward 已启用，当前合格信号 ${evaluatedSamples}/${allEvaluatedSamples} 个，样本仍不足，暂不放大强信号。`
   }
-  return `选择性 Walk-forward ${evaluatedSamples}/${allEvaluatedSamples} 个合格信号，阈值 ${signalThreshold}/100，胜率 ${formatPercent(winRate)}，基准 ${formatPercent(baselineWinRate)}，平均收益 ${formatPercent(averageReturn)}，Profit Factor ${formatRatio(profitFactor)}，最大回撤 ${formatPercent(maxDrawdown)}。`
+  if (metricsFrozen) {
+    return `${horizonMinutes} 分钟选择性 Walk-forward 已冻结：合格信号 ${evaluatedSamples}/${allEvaluatedSamples} 个，完整样本 ${completeEvaluatedSamples}/${MIN_WEIGHTED_SAMPLES}。${freezeReason ?? '样本未完成，不展示胜率/PF/回测增益。'}`
+  }
+  return `${horizonMinutes} 分钟选择性 Walk-forward ${evaluatedSamples}/${allEvaluatedSamples} 个合格信号，阈值 ${signalThreshold}/100，胜率 ${formatPercent(winRate)}，基准 ${formatPercent(baselineWinRate)}，平均收益 ${formatPercent(averageReturn)}，Profit Factor ${formatRatio(profitFactor)}，最大回撤 ${formatPercent(maxDrawdown)}。`
 }
 
 function formatPercent(value: number | null) {

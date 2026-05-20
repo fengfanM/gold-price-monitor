@@ -20,6 +20,7 @@ const MARKET_CONTEXT_FILE = path.join(DATA_DIR, 'market-context.json')
 const BACKTEST_SNAPSHOTS_FILE = path.join(DATA_DIR, 'backtest-snapshots.json')
 const FACTORS_FILE = path.join(DATA_DIR, 'market-factors.json')
 const PROVIDER_HEALTH_FILE = path.join(DATA_DIR, 'provider-health-history.json')
+const BACKTEST_SNAPSHOT_LIMIT = Number(process.env.BACKTEST_SNAPSHOT_LIMIT ?? '20000')
 const SQLITE_FILE = process.env.SQLITE_FILE
   ? path.resolve(process.env.SQLITE_FILE)
   : path.join(DATA_DIR, 'gold-monitor.sqlite')
@@ -60,6 +61,7 @@ export type HistoryStorageAdapter = {
   saveMarketContext(marketContext: MarketContext): Promise<void>
   loadBacktestSnapshots(): Promise<BacktestSnapshot[]>
   saveBacktestSnapshot(snapshot: BacktestSnapshot): Promise<void>
+  saveBacktestSnapshots(snapshots: BacktestSnapshot[]): Promise<void>
   loadFactors(): Promise<MarketFactor[]>
   saveFactors(factors: MarketFactor[]): Promise<void>
   loadProviderHealthSnapshots(): Promise<ProviderHealthSnapshot[]>
@@ -123,11 +125,14 @@ class FileHistoryStorage implements HistoryStorageAdapter {
 
   async saveBacktestSnapshot(snapshot: BacktestSnapshot) {
     const existing = await this.loadBacktestSnapshots()
-    const snapshots = [...existing, snapshot]
-      .slice(-500)
+    const snapshots = mergeBacktestSnapshots(existing, [snapshot])
+    await this.saveBacktestSnapshots(snapshots)
+  }
+
+  async saveBacktestSnapshots(snapshots: BacktestSnapshot[]) {
     await writeJsonAtomic(this.backtestSnapshotsFile, {
       updatedAt: new Date().toISOString(),
-      snapshots,
+      snapshots: normalizeBacktestSnapshots(snapshots),
     })
   }
 
@@ -195,7 +200,11 @@ class SqliteHistoryStorage implements HistoryStorageAdapter {
 
   async saveBacktestSnapshot(snapshot: BacktestSnapshot) {
     const existing = await this.loadBacktestSnapshots()
-    await this.writeJson('backtestSnapshots', [...existing, snapshot].slice(-1000))
+    await this.saveBacktestSnapshots(mergeBacktestSnapshots(existing, [snapshot]))
+  }
+
+  async saveBacktestSnapshots(snapshots: BacktestSnapshot[]) {
+    await this.writeJson('backtestSnapshots', normalizeBacktestSnapshots(snapshots))
   }
 
   async loadFactors() {
@@ -268,7 +277,11 @@ class PostgresHttpHistoryStorage implements HistoryStorageAdapter {
 
   async saveBacktestSnapshot(snapshot: BacktestSnapshot) {
     const existing = await this.loadBacktestSnapshots()
-    await this.writeJson('backtestSnapshots', [...existing, snapshot].slice(-1000))
+    await this.saveBacktestSnapshots(mergeBacktestSnapshots(existing, [snapshot]))
+  }
+
+  async saveBacktestSnapshots(snapshots: BacktestSnapshot[]) {
+    await this.writeJson('backtestSnapshots', normalizeBacktestSnapshots(snapshots))
   }
 
   async loadFactors() {
@@ -382,7 +395,11 @@ class PostgresDirectHistoryStorage implements HistoryStorageAdapter {
 
   async saveBacktestSnapshot(snapshot: BacktestSnapshot) {
     const existing = await this.loadBacktestSnapshots()
-    await this.writeJson('backtestSnapshots', [...existing, snapshot].slice(-1000))
+    await this.saveBacktestSnapshots(mergeBacktestSnapshots(existing, [snapshot]))
+  }
+
+  async saveBacktestSnapshots(snapshots: BacktestSnapshot[]) {
+    await this.writeJson('backtestSnapshots', normalizeBacktestSnapshots(snapshots))
   }
 
   async loadFactors() {
@@ -471,6 +488,10 @@ class PlannedCloudHistoryStorage implements HistoryStorageAdapter {
     throw new Error(`${this.kind} 回测快照存储适配器尚未配置，请先接入对应云存储客户端。`)
   }
 
+  async saveBacktestSnapshots(): Promise<void> {
+    throw new Error(`${this.kind} 回测快照存储适配器尚未配置，请先接入对应云存储客户端。`)
+  }
+
   async loadFactors(): Promise<MarketFactor[]> {
     throw new Error(`${this.kind} 因子存储适配器尚未配置，请先接入对应云存储客户端。`)
   }
@@ -542,6 +563,10 @@ export async function saveBacktestSnapshot(snapshot: BacktestSnapshot) {
   await storage.saveBacktestSnapshot(snapshot)
 }
 
+export async function saveBacktestSnapshots(snapshots: BacktestSnapshot[]) {
+  await storage.saveBacktestSnapshots(snapshots)
+}
+
 export async function loadFactors(): Promise<MarketFactor[]> {
   return storage.loadFactors()
 }
@@ -556,6 +581,27 @@ export async function loadProviderHealthSnapshots(): Promise<ProviderHealthSnaps
 
 export async function saveProviderHealthSnapshot(snapshot: ProviderHealthSnapshot) {
   await storage.saveProviderHealthSnapshot(snapshot)
+}
+
+export function mergeBacktestSnapshots(
+  existing: BacktestSnapshot[],
+  incoming: BacktestSnapshot[],
+) {
+  return normalizeBacktestSnapshots([...existing, ...incoming])
+}
+
+function normalizeBacktestSnapshots(snapshots: BacktestSnapshot[]) {
+  const merged = new Map<string, BacktestSnapshot>()
+  for (const snapshot of snapshots) {
+    const timestampMs = new Date(snapshot.quoteTimestamp).getTime()
+    if (!Number.isFinite(timestampMs) || !Number.isFinite(snapshot.price) || snapshot.price <= 0) {
+      continue
+    }
+    merged.set(snapshot.quoteTimestamp, snapshot)
+  }
+  return [...merged.values()]
+    .sort((left, right) => new Date(left.quoteTimestamp).getTime() - new Date(right.quoteTimestamp).getTime())
+    .slice(-Math.max(2000, BACKTEST_SNAPSHOT_LIMIT))
 }
 
 type SqliteDatabase = {

@@ -273,6 +273,9 @@ export function buildProbabilityMetricsFromSnapshots(
           stopLossReturnPercent: -0.01,
         },
       )
+      if (barrierLabel.complete === false) {
+        continue
+      }
       const probability = current.modelProbability ?? snapshotRuleProbability(current)
       outcomes.push({
         probability: clamp(probability, 0.01, 0.99),

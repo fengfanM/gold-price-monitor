@@ -156,9 +156,13 @@ type FailureAttribution = {
 
 type BacktestMonitor = {
   updatedAt: string
+  horizonMinutes?: number
   sampleSize: number
   allEvaluatedSamples?: number
   evaluatedSamples: number
+  completeEvaluatedSamples?: number
+  metricsFrozen?: boolean
+  freezeReason?: string | null
   signalThreshold?: number
   winRate: number | null
   baselineWinRate?: number | null
@@ -376,12 +380,17 @@ type FinalDecision = {
 }
 
 type DecisionViewModel = {
-  version: 'decision-view-v1'
+  version: 'decision-view-v2'
   action: FinalDecision['action']
   displayGrade: FinalDecision['signalGrade']
   primaryInstruction: string
   beginnerInstruction: string
   canAct: boolean
+  executionState: 'no_trade' | 'watch_only' | 'waiting_for_trigger' | 'trigger_armed' | 'trigger_missed' | 'invalidated' | 'reduce_position'
+  singleCommand: string
+  actionAllowed: boolean
+  actionBlockedReason: string | null
+  displayGuards: string[]
   triggerPrice: number | null
   stopLoss: number | null
   takeProfit1: number | null
@@ -405,6 +414,28 @@ type DecisionViewModel = {
     trigger: LevelValidationItem
     stopLoss: LevelValidationItem
     takeProfit1: LevelValidationItem
+  }
+  validatedLevels: {
+    support: LevelValidationItem
+    resistance: LevelValidationItem
+    trigger: LevelValidationItem
+    stopLoss: LevelValidationItem
+    takeProfit1: LevelValidationItem
+  }
+  backtestValidity: {
+    completeSamples: number
+    incompleteSampleRate: number | null
+    metricsEnabled: boolean
+    freezeReason: string | null
+    minSamplesRequired: number
+  }
+  sourceHealth: {
+    tradeSourceStatus: 'live' | 'stale' | 'fallback' | 'offline'
+    referenceSourceStatus: 'live' | 'partial' | 'missing' | 'diverged'
+    macroMirrorStatus: 'learning_only' | 'production_eligible' | 'disabled' | 'unknown'
+    providerProbeStatus: 'live' | 'partial' | 'missing'
+    canUseForStrongSignal: boolean
+    warnings: string[]
   }
   sourceWarnings: string[]
   blockerSummary: string
@@ -878,9 +909,11 @@ type ChartPrediction = {
 type HardGateStatus = 'pass' | 'watch' | 'block'
 
 type SignalTransparency = {
-  probability: number
+  probability: number | null
+  probabilityLabel: string
+  probabilityReason: string
   winRate: number | null
-  calibrationConfidence: number
+  calibrationConfidence: number | null
   reliability: number | null
   sampleSize: number
   verdict: string
@@ -1258,7 +1291,7 @@ function App() {
     buySignal,
     chartPrediction,
   ])
-  const signalMeta = getOpportunityMeta(buySignal?.level ?? 'none')
+  const signalMeta = getDecisionMeta(buySignal?.decisionView ?? null, buySignal?.level ?? 'none')
   const signalScoreText = formatScore(buySignal?.score ?? null)
   const dataStatus = buildDataStatus(quote, error, lastAttemptText)
   const sourceLedgerAlert = quote?.sourceLedger?.warnings.find((warning) =>
@@ -1408,15 +1441,9 @@ function App() {
             <AlertTriangle size={20} />
           </div>
           <div className="opportunity-alert__body">
-            <strong>
-              {buySignal.level === 'strong'
-                ? '强复核 · 等触发执行'
-                : buySignal.level === 'watch'
-                  ? '观察信号 · 不追价'
-                  : `${signalMeta.label} · 条件复核`}
-            </strong>
+            <strong>{signalMeta.label}</strong>
             <span>
-              {buySignal.decisionView?.primaryInstruction ?? buySignal.summary}
+              {buySignal.decisionView?.singleCommand ?? buySignal.decisionView?.primaryInstruction ?? buySignal.summary}
               {buySignal.reasons[0] ? ` · ${buySignal.reasons[0]}` : ''}
             </span>
             <small>
@@ -1442,8 +1469,8 @@ function App() {
         <section className="trader-command-card" aria-label="交易员口令卡">
           <article>
             <span>现在动作</span>
-            <strong>{buySignal.finalDecision?.actionLabel ?? signalMeta.label}</strong>
-            <small>{buySignal.decisionView.primaryInstruction}</small>
+            <strong>{executionStateLabel(buySignal.decisionView.executionState)}</strong>
+            <small>{buySignal.decisionView.singleCommand}</small>
           </article>
           <article>
             <span>等待价位</span>
@@ -1756,7 +1783,7 @@ function OpportunityPanel(props: {
   signal: OpportunityInfo | null
   transparency: SignalTransparency
 }) {
-  const meta = getOpportunityMeta(props.signal?.level ?? 'none')
+  const meta = getDecisionMeta(props.signal?.decisionView ?? null, props.signal?.level ?? 'none')
   const [activeTab, setActiveTab] = useState<OpportunityTab>('decision')
 
   return (
@@ -1853,12 +1880,14 @@ function DecisionBriefPanel(props: {
   signal: OpportunityInfo | null
   transparency: SignalTransparency
 }) {
+  const decisionView = props.signal?.decisionView ?? null
   const plan = props.signal?.tradePlan ?? null
-  const action = plan?.actionLabel ?? getOpportunityMeta(props.signal?.level ?? 'none').label
-  const position = plan?.positionSuggestion ?? props.signal?.summary ?? '等待更多实时样本确认。'
-  const riskReward = plan?.riskRewardRatio === null || plan?.riskRewardRatio === undefined
+  const action = decisionView?.singleCommand ?? plan?.actionLabel ?? getOpportunityMeta(props.signal?.level ?? 'none').label
+  const position = decisionView?.beginnerInstruction ?? plan?.positionSuggestion ?? props.signal?.summary ?? '等待更多实时样本确认。'
+  const riskRewardValue = decisionView?.riskRewardRatio ?? plan?.riskRewardRatio ?? null
+  const riskReward = riskRewardValue === null
     ? '--'
-    : `${plan.riskRewardRatio}:1`
+    : `${riskRewardValue}:1`
 
   return (
     <section className="decision-brief">
@@ -1869,7 +1898,10 @@ function DecisionBriefPanel(props: {
       <div className="decision-brief__grid">
         <MetricCard label="动作" value={action} />
         <MetricCard label="赔率" value={riskReward} />
-        <MetricCard label="TP1先达倾向" value={formatProbability(props.transparency.probability)} />
+        <MetricCard
+          label="TP1先达倾向"
+          value={props.transparency.probability === null ? props.transparency.probabilityLabel : formatProbability(props.transparency.probability)}
+        />
         <MetricCard label="可靠性" value={props.transparency.reliability === null ? '--' : `${props.transparency.reliability}/100`} />
       </div>
       <p>{position}</p>
@@ -1885,11 +1917,14 @@ function SignalTransparencyPanel(props: { compact?: boolean; transparency: Signa
         <span>{props.transparency.verdict}</span>
       </header>
       <div className="signal-transparency__grid">
-        <MetricCard label="模型倾向" value={formatProbability(props.transparency.probability)} />
+        <MetricCard
+          label="模型倾向"
+          value={props.transparency.probability === null ? props.transparency.probabilityLabel : formatProbability(props.transparency.probability)}
+        />
         <MetricCard label="回测胜率" value={formatNullablePercent(props.transparency.winRate)} />
         <MetricCard
           label="校准可信度"
-          value={`${props.transparency.calibrationConfidence}/100`}
+          value={props.transparency.calibrationConfidence === null ? '--' : `${props.transparency.calibrationConfidence}/100`}
         />
         <MetricCard
           label="可靠性"
@@ -2160,6 +2195,7 @@ function BacktestMonitorPanel(props: { monitor: BacktestMonitor | null }) {
   if (!monitor) {
     return null
   }
+  const sampleStatus = buildBacktestSampleStatus(monitor)
 
   return (
     <section className="backtest-monitor-panel">
@@ -2168,12 +2204,17 @@ function BacktestMonitorPanel(props: { monitor: BacktestMonitor | null }) {
         <span>{monitor.evaluatedSamples}/{monitor.allEvaluatedSamples ?? monitor.sampleSize}</span>
       </header>
       <p>{monitor.summary}</p>
+      <div className={`sample-accumulation-panel sample-accumulation-panel--${sampleStatus.tone}`}>
+        <strong>{sampleStatus.title}</strong>
+        <span>{sampleStatus.detail}</span>
+        <small>{sampleStatus.hint}</small>
+      </div>
       <div className="valuation-grid">
-        <MetricCard label="合格信号胜率" value={formatNullablePercent(monitor.winRate)} />
-        <MetricCard label="基准胜率" value={formatNullablePercent(monitor.baselineWinRate ?? null)} />
-        <MetricCard label="平均收益" value={formatNullablePercent(monitor.averageReturn)} />
-        <MetricCard label="Profit Factor" value={formatNullableRatio(monitor.profitFactor ?? null)} />
-        <MetricCard label="可信度" value={monitor.reliability === undefined ? '--' : `${monitor.reliability}/100`} />
+        <MetricCard label="合格信号胜率" value={monitor.metricsFrozen ? '样本冻结' : formatNullablePercent(monitor.winRate)} />
+        <MetricCard label="基准胜率" value={monitor.metricsFrozen ? '样本冻结' : formatNullablePercent(monitor.baselineWinRate ?? null)} />
+        <MetricCard label="平均收益" value={monitor.metricsFrozen ? '样本冻结' : formatNullablePercent(monitor.averageReturn)} />
+        <MetricCard label="Profit Factor" value={monitor.metricsFrozen ? '样本冻结' : formatNullableRatio(monitor.profitFactor ?? null)} />
+        <MetricCard label="可信度" value={monitor.metricsFrozen ? '--' : monitor.reliability === undefined ? '--' : `${monitor.reliability}/100`} />
         <MetricCard label="Sortino" value={formatNullableRatio(monitor.sortinoRatio)} />
         <MetricCard label="最大回撤" value={formatNullablePercent(monitor.maxDrawdown)} />
         <MetricCard label="失败样本" value={`${monitor.failureSamples.length}`} />
@@ -2193,6 +2234,28 @@ function BacktestMonitorPanel(props: { monitor: BacktestMonitor | null }) {
       ) : null}
     </section>
   )
+}
+
+function buildBacktestSampleStatus(monitor: BacktestMonitor) {
+  const minComplete = 30
+  const complete = monitor.completeEvaluatedSamples ?? 0
+  const all = monitor.allEvaluatedSamples ?? monitor.sampleSize
+  const incompleteRate = monitor.incompleteSampleRate ?? null
+  const missing = Math.max(0, minComplete - complete)
+  if (!monitor.metricsFrozen) {
+    return {
+      tone: 'ready',
+      title: '样本已启用',
+      detail: `${monitor.horizonMinutes ?? 60} 分钟完整合格样本 ${complete}/${minComplete}，当前胜率/PF 已允许参与低权重校准。`,
+      hint: `总快照 ${monitor.sampleSize}，可评估 ${monitor.evaluatedSamples}/${all}，未完成 ${formatNullablePercentUnsigned(incompleteRate)}。`,
+    } as const
+  }
+  return {
+    tone: 'warming',
+    title: '样本正在积累',
+    detail: `${monitor.horizonMinutes ?? 60} 分钟窗口还差 ${missing} 个完整合格样本才会解冻胜率/PF。系统已用历史行情冷启动，并会随实时刷新继续追加。`,
+    hint: monitor.freezeReason ?? `总快照 ${monitor.sampleSize}，完整样本 ${complete}/${minComplete}，未完成 ${formatNullablePercentUnsigned(incompleteRate)}。`,
+  } as const
 }
 
 function ExternalModelBacktestPanel(props: {
@@ -2315,7 +2378,7 @@ function BacktestResearchPage(props: {
           <span>当前策略分</span>
           <strong>{formatScore(score)}</strong>
           <small>
-            可靠性 {monitor?.reliability === undefined ? '--' : `${monitor.reliability}/100`}
+            可靠性 {monitor?.metricsFrozen ? '--' : monitor?.reliability === undefined ? '--' : `${monitor.reliability}/100`}
             {' · '}
             {props.signal?.summary ?? '暂无当前信号'}
           </small>
@@ -2324,11 +2387,11 @@ function BacktestResearchPage(props: {
 
       <div className="backtest-kpi-grid">
         <MetricCard label="合格/全部样本" value={monitor ? `${monitor.evaluatedSamples}/${monitor.allEvaluatedSamples ?? monitor.sampleSize}` : '--'} />
-        <MetricCard label="合格信号胜率" value={formatNullablePercent(monitor?.winRate ?? null)} />
-        <MetricCard label="基准胜率" value={formatNullablePercent(monitor?.baselineWinRate ?? null)} />
-        <MetricCard label="平均收益" value={formatNullablePercent(monitor?.averageReturn ?? null)} />
-        <MetricCard label="Profit Factor" value={formatNullableRatio(monitor?.profitFactor ?? null)} />
-        <MetricCard label="可信度" value={monitor?.reliability === undefined ? '--' : `${monitor.reliability}/100`} />
+        <MetricCard label="合格信号胜率" value={monitor?.metricsFrozen ? '样本冻结' : formatNullablePercent(monitor?.winRate ?? null)} />
+        <MetricCard label="基准胜率" value={monitor?.metricsFrozen ? '样本冻结' : formatNullablePercent(monitor?.baselineWinRate ?? null)} />
+        <MetricCard label="平均收益" value={monitor?.metricsFrozen ? '样本冻结' : formatNullablePercent(monitor?.averageReturn ?? null)} />
+        <MetricCard label="Profit Factor" value={monitor?.metricsFrozen ? '样本冻结' : formatNullableRatio(monitor?.profitFactor ?? null)} />
+        <MetricCard label="可信度" value={monitor?.metricsFrozen ? '--' : monitor?.reliability === undefined ? '--' : `${monitor.reliability}/100`} />
         <MetricCard label="最大回撤" value={formatNullablePercent(monitor?.maxDrawdown ?? null)} />
       </div>
 
@@ -2560,9 +2623,9 @@ function buildCurveBars(
 }
 
 function buildReliabilityBars(monitor: BacktestMonitor | null) {
-  if (!monitor) {
+  if (!monitor || monitor.metricsFrozen) {
     return Array.from({ length: 6 }, (_, index) => ({
-      label: `等待${index + 1}`,
+      label: monitor?.metricsFrozen && index === 0 ? '样本冻结' : `等待${index + 1}`,
       value: 8,
       tone: 'empty' as const,
     }))
@@ -4376,9 +4439,9 @@ function ChartSignalStrip(props: {
       <div className="chart-extreme-card">
         <span>关键价位</span>
         <strong>
-          支撑 {formatMaybePrice(props.forecast.support ?? props.extremes.low?.value ?? null)}
+          支撑 {formatMaybePrice(props.forecast.support)}
           <b> / </b>
-          压力 {formatMaybePrice(props.forecast.resistance ?? props.extremes.high?.value ?? null)}
+          压力 {formatMaybePrice(props.forecast.resistance)}
         </strong>
         <small>
           {leadingPattern
@@ -4487,8 +4550,10 @@ function ChartInsightDeck(props: {
   const externalMonitor = props.monitor?.externalModel ?? null
   const bestBucket = externalMonitor?.bestBuckets[0] ?? null
   const weakBucket = externalMonitor?.weakBuckets[0] ?? null
-  const action = props.signal?.finalDecision?.actionLabel ?? props.signal?.tradePlan?.actionLabel ?? props.transparency.verdict
   const decisionView = props.signal?.decisionView ?? null
+  const action = decisionView?.singleCommand ?? props.transparency.verdict
+  const canShowExternalProbability = decisionView?.backtestValidity.metricsEnabled === true &&
+    decisionView.probabilityDisplay.mode === 'calibrated'
 
   return (
     <section className="chart-insight-deck" aria-label="可视化军师摘要">
@@ -4501,7 +4566,7 @@ function ChartInsightDeck(props: {
         <span>外部模型军师</span>
         <strong>
           {external
-            ? `${externalModelProviderLabel(external.provider)} ${external.upProbability === null ? '--' : formatProbability(external.upProbability * 100)}`
+            ? `${externalModelProviderLabel(external.provider)} ${canShowExternalProbability && external.upProbability !== null ? formatProbability(external.upProbability * 100) : '--'}`
             : '未配置'}
         </strong>
         <small>{external?.backtestGate?.summary ?? external?.summary ?? externalMonitor?.summary ?? 'Chronos/TimesFM/Moirai 只在通过分桶回测后才允许加权。'}</small>
@@ -4521,8 +4586,12 @@ function ChartInsightDeck(props: {
       </article>
       <article className="chart-insight-card">
         <span>数据源覆盖</span>
-        <strong>{liveProviders === null || totalProviders === null ? '--' : `${liveProviders}/${totalProviders}`}</strong>
-        <small>{props.signal?.marketContext?.summary ?? '工作日交易时段要求工银、AU9999、银行参考和宏观源尽量一致。'}</small>
+        <strong>{decisionView ? sourceHealthSummary(decisionView.sourceHealth) : liveProviders === null || totalProviders === null ? '--' : `${liveProviders}/${totalProviders}`}</strong>
+        <small>
+          {decisionView?.sourceHealth.warnings[0] ??
+            props.signal?.marketContext?.summary ??
+            '工作日交易时段要求工银、AU9999、银行参考和宏观源尽量一致。'}
+        </small>
       </article>
     </section>
   )
@@ -4547,14 +4616,22 @@ function externalModelProviderLabel(provider: ExternalModelAdvisor['provider']) 
   return '自定义'
 }
 
+function sourceHealthSummary(sourceHealth: DecisionViewModel['sourceHealth']) {
+  const trade = sourceHealth.tradeSourceStatus === 'live' ? '交易源实时' : `交易源${sourceHealth.tradeSourceStatus}`
+  const reference = sourceHealth.referenceSourceStatus === 'live' ? '锚点通过' : `锚点${sourceHealth.referenceSourceStatus}`
+  const provider = sourceHealth.providerProbeStatus === 'missing' ? '探针待补' : `探针${sourceHealth.providerProbeStatus}`
+  return `${trade} · ${reference} · ${provider}`
+}
+
 function buildScoreMethodology(signal: OpportunityInfo | null, monitor: BacktestMonitor | null) {
   const score = normalizeScoreNumber(signal?.score)
   const macroScore = normalizeScoreNumber(signal?.marketContext?.factorScore)
   const valuationScore = normalizeScoreNumber(signal?.valuation?.score)
-  const horizonWinRate = signal?.marketContext?.backtest.horizons[0]?.winRate ?? null
-  const backtestScore = typeof monitor?.winRate === 'number'
+  const metricsEnabled = signal?.decisionView?.backtestValidity.metricsEnabled ?? !monitor?.metricsFrozen
+  const horizonWinRate = metricsEnabled ? signal?.marketContext?.backtest.horizons[0]?.winRate ?? null : null
+  const backtestScore = metricsEnabled && typeof monitor?.winRate === 'number'
     ? Math.round(monitor.winRate * 100)
-    : typeof horizonWinRate === 'number'
+    : metricsEnabled && typeof horizonWinRate === 'number'
       ? Math.round(horizonWinRate * 100)
       : null
   const expertScore = signal?.expertConsensus
@@ -4565,7 +4642,7 @@ function buildScoreMethodology(signal: OpportunityInfo | null, monitor: Backtest
   const unavailableCritical = (signal?.marketContext?.providerHealth ?? [])
     .filter((provider) => provider.participatesInScoring && provider.status === 'unavailable')
     .length
-  const modelReliability = monitor?.reliability ?? null
+  const modelReliability = metricsEnabled ? monitor?.reliability ?? null : null
   const confidence =
     score === null
       ? '等待样本'
@@ -4630,9 +4707,18 @@ function buildSignalTransparency(
   monitor: BacktestMonitor | null,
   prediction: ChartPrediction,
 ): SignalTransparency {
-  const score = normalizeScoreNumber(signal?.score)
-  const reliability = monitor?.reliability ?? null
-  const sampleSize = monitor?.evaluatedSamples ?? 0
+  const decisionView = signal?.decisionView ?? null
+  const probabilityDisplay = decisionView?.probabilityDisplay ?? null
+  const canShowProbability = Boolean(
+    probabilityDisplay?.mode === 'calibrated' &&
+      probabilityDisplay.value !== null &&
+      decisionView?.calibrationStatus.canShowNumericProbability,
+  )
+  const probability = canShowProbability && probabilityDisplay !== null && probabilityDisplay.value !== null
+    ? Math.round(probabilityDisplay.value * 100)
+    : null
+  const reliability = monitor?.metricsFrozen ? null : monitor?.reliability ?? null
+  const sampleSize = decisionView?.backtestValidity.completeSamples ?? monitor?.completeEvaluatedSamples ?? 0
   const liveFactors = countLiveMarketFactors(signal?.marketContext ?? null)
   const totalFactors = countTotalMarketFactors(signal?.marketContext ?? null)
   const sourceCoverage = totalFactors > 0 ? liveFactors / totalFactors : 0
@@ -4640,21 +4726,24 @@ function buildSignalTransparency(
   const hasStopLoss = typeof signal?.tradePlan?.stopLoss === 'number'
   const eventRisk = signal?.eventRisk?.level ?? 'none'
   const psychologyAction = signal?.psychology?.action ?? 'allow_plan'
-  const calibrationConfidence = Math.round(clamp(
-    prediction.confidence * 0.45 +
-      (reliability ?? 42) * 0.28 +
-      Math.min(18, sampleSize * 1.5) +
-      sourceCoverage * 14 -
-      (eventRisk === 'critical' ? 12 : eventRisk === 'elevated' ? 6 : 0),
-    20,
-    92,
-  ))
+  const calibrationConfidence = canShowProbability
+    ? Math.round(clamp(
+        prediction.confidence * 0.45 +
+          (reliability ?? 42) * 0.28 +
+          Math.min(18, sampleSize * 1.5) +
+          sourceCoverage * 14 -
+          (eventRisk === 'critical' ? 12 : eventRisk === 'elevated' ? 6 : 0),
+        20,
+        92,
+      ))
+    : null
 
   const hardGates: SignalTransparency['hardGates'] = [
     {
       label: '样本门槛',
-      status: sampleSize >= 30 ? 'pass' : sampleSize >= 10 ? 'watch' : 'block',
-      detail: sampleSize > 0 ? `已评估 ${sampleSize} 个合格样本` : '等待回测样本积累',
+      status: decisionView?.backtestValidity.metricsEnabled ? 'pass' : sampleSize >= 10 ? 'watch' : 'block',
+      detail: decisionView?.backtestValidity.freezeReason ??
+        (sampleSize > 0 ? `完整样本 ${sampleSize} 个` : '等待回测样本积累'),
     },
     {
       label: '数据源门槛',
@@ -4679,28 +4768,41 @@ function buildSignalTransparency(
   ]
 
   const blockedCount = hardGates.filter((gate) => gate.status === 'block').length
-  const watchCount = hardGates.filter((gate) => gate.status === 'watch').length
-  const verdict = blockedCount > 0
-    ? '只观察'
-    : watchCount > 0
-      ? '小心复核'
-      : score !== null && score >= 72
-        ? '可复核强信号'
-        : '等待确认'
+  const verdict = decisionView
+    ? executionStateLabel(decisionView.executionState)
+    : blockedCount > 0
+      ? '只观察'
+      : '等待确认'
 
   return {
-    probability: prediction.showProbability ? prediction.upProbability : 0,
-    winRate: monitor?.winRate ?? signal?.marketContext?.backtest.horizons[0]?.winRate ?? null,
+    probability,
+    probabilityLabel: probabilityDisplay?.label ?? prediction.displayText,
+    probabilityReason: probabilityDisplay?.reason ?? prediction.basis,
+    winRate: decisionView?.backtestValidity.metricsEnabled ? monitor?.winRate ?? null : null,
     calibrationConfidence,
     reliability,
     sampleSize,
     verdict,
     guardrail:
-      blockedCount > 0
+      decisionView?.singleCommand ??
+      (blockedCount > 0
         ? '存在硬门槛未通过时，页面只给观察优先级，不应把它解读为可执行买入。'
-        : '全部硬门槛通过后仍需分批、止损和仓位上限；概率代表历史相似条件下的倾向，不是确定性。',
+        : '全部硬门槛通过后仍需分批、止损和仓位上限；概率代表历史相似条件下的倾向，不是确定性。'),
     hardGates,
   }
+}
+
+function executionStateLabel(state: DecisionViewModel['executionState']) {
+  const labels: Record<DecisionViewModel['executionState'], string> = {
+    no_trade: '禁止开仓',
+    watch_only: '只观察',
+    waiting_for_trigger: '等待触发',
+    trigger_armed: '等待触发',
+    trigger_missed: '机会已错过',
+    invalidated: '计划失效',
+    reduce_position: '止盈/降仓',
+  }
+  return labels[state]
 }
 
 function hardGateLabel(status: HardGateStatus) {
@@ -4744,7 +4846,7 @@ function buildChartPrediction(
   const factorScore = normalizeScoreNumber(signal?.marketContext?.factorScore) ?? 50
   const valuationScore = normalizeScoreNumber(signal?.valuation?.score) ?? 50
   const backtestScore =
-    typeof monitor?.winRate === 'number' && Number.isFinite(monitor.winRate)
+    !monitor?.metricsFrozen && typeof monitor?.winRate === 'number' && Number.isFinite(monitor.winRate)
       ? clamp(monitor.winRate * 100, 20, 80)
       : 50
   const consensus = signal?.expertConsensus
@@ -4867,6 +4969,20 @@ function buildChartForecast(
 function buildChartSignal(signal: OpportunityInfo | null, prediction: ChartPrediction): ChartSignal {
   const decisionView = signal?.decisionView ?? null
   if (decisionView) {
+    if (decisionView.executionState === 'trigger_missed') {
+      return {
+        tone: 'wait',
+        label: '机会已错过 · 不追',
+        detail: decisionView.singleCommand,
+      }
+    }
+    if (decisionView.executionState === 'invalidated') {
+      return {
+        tone: 'risk',
+        label: '计划失效',
+        detail: decisionView.singleCommand,
+      }
+    }
     if (decisionView.action === 'avoid' || decisionView.displayGrade === 'blocked') {
       return {
         tone: 'risk',
@@ -4890,8 +5006,10 @@ function buildChartSignal(signal: OpportunityInfo | null, prediction: ChartPredi
     }
     return {
       tone: 'watch',
-      label: decisionView.action === 'confirm_then_enter' ? '候选买点 · 等触发' : '观察信号 · 不追价',
-      detail: decisionView.primaryInstruction,
+      label: decisionView.executionState === 'waiting_for_trigger' || decisionView.executionState === 'trigger_armed'
+        ? '候选买点 · 等触发'
+        : '观察信号 · 不追价',
+      detail: decisionView.singleCommand,
     }
   }
   const consensusAction = signal?.expertConsensus?.action
@@ -6233,7 +6351,7 @@ function normalizeFinalDecision(value: FinalDecision | null | undefined) {
 }
 
 function normalizeDecisionView(value: DecisionViewModel | null | undefined) {
-  if (!value || value.version !== 'decision-view-v1' || !value.probabilityDisplay) {
+  if (!value || value.version !== 'decision-view-v2' || !value.probabilityDisplay) {
     return null
   }
   return value
@@ -6438,6 +6556,45 @@ function getOpportunityMeta(level: OpportunityLevel) {
     eyebrow: 'WAIT',
     label: '等待信号',
     tone: 'muted',
+  } as const
+}
+
+function getDecisionMeta(decisionView: DecisionViewModel | null, level: OpportunityLevel) {
+  if (!decisionView) {
+    return getOpportunityMeta(level)
+  }
+  if (decisionView.actionAllowed) {
+    return {
+      eyebrow: 'SETUP REVIEW',
+      label: '强复核 · 等触发执行',
+      tone: 'strong',
+    } as const
+  }
+  if (decisionView.executionState === 'trigger_missed') {
+    return {
+      eyebrow: 'MISSED SETUP',
+      label: '机会已错过 · 不追',
+      tone: 'watch',
+    } as const
+  }
+  if (decisionView.executionState === 'invalidated' || decisionView.executionState === 'no_trade') {
+    return {
+      eyebrow: 'RISK GATE',
+      label: '禁止开仓',
+      tone: 'elevated',
+    } as const
+  }
+  if (decisionView.executionState === 'waiting_for_trigger' || decisionView.executionState === 'trigger_armed') {
+    return {
+      eyebrow: 'OBSERVATION SIGNAL',
+      label: '等待触发 · 不追价',
+      tone: 'watch',
+    } as const
+  }
+  return {
+    eyebrow: 'OBSERVATION SIGNAL',
+    label: '只观察 · 不开新仓',
+    tone: 'watch',
   } as const
 }
 

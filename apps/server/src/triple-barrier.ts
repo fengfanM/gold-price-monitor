@@ -25,6 +25,7 @@ export function buildTripleBarrierLabel(
   const tp1Price = entry.price * (1 + tp1ReturnPercent)
   const stopLossPrice = entry.price * (1 + stopLossReturnPercent)
   const window: BarrierPoint[] = []
+  let firstAfterHorizon: BarrierPoint | null = null
 
   for (let cursor = index + 1; cursor < points.length; cursor += 1) {
     const point = points[cursor]
@@ -33,6 +34,7 @@ export function buildTripleBarrierLabel(
       continue
     }
     if (pointMs - entryMs > horizonMs) {
+      firstAfterHorizon = point
       break
     }
     window.push(point)
@@ -45,6 +47,19 @@ export function buildTripleBarrierLabel(
   }
 
   const last = window[window.length - 1]
+  const completionPoint = findDelayedCompletionPoint(entryMs, horizonMs, firstAfterHorizon)
+  if (completionPoint) {
+    return buildBarrierResult(
+      entry,
+      completionPoint,
+      [...window, completionPoint],
+      options.horizonMinutes,
+      'no_touch',
+      tp1Price,
+      stopLossPrice,
+      true,
+    )
+  }
   if (!last) {
     return buildBarrierResult(entry, entry, [], options.horizonMinutes, 'timeout', tp1Price, stopLossPrice, false)
   }
@@ -59,6 +74,22 @@ export function buildTripleBarrierLabel(
     stopLossPrice,
     complete,
   )
+}
+
+function findDelayedCompletionPoint(
+  entryMs: number,
+  horizonMs: number,
+  point: BarrierPoint | null,
+) {
+  if (!point) {
+    return null
+  }
+  const pointMs = new Date(point.timestamp).getTime()
+  if (!Number.isFinite(pointMs)) {
+    return null
+  }
+  const completionLagMs = pointMs - entryMs - horizonMs
+  return completionLagMs >= 0 && completionLagMs <= horizonMs ? point : null
 }
 
 export function historyPointToBarrierPoint(point: HistoryPoint): BarrierPoint {

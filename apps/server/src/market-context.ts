@@ -33,6 +33,8 @@ type FactorScorer = (
   quote: ProviderQuote,
 ) => { score: number; impact: MarketFactorImpact; summary: string }
 
+const MIN_LOCAL_BACKTEST_WINDOWS = 30
+
 export async function buildMarketContext(
   latestQuote: QuoteSample,
   history: HistoryPoint[],
@@ -412,7 +414,7 @@ function buildBacktestFactor(
     return {
       status: sampleSize > 1 ? 'derived' : 'unavailable',
       sampleSize,
-      summary: '本地历史样本不足，回测收益/回撤暂不用于强信号。',
+      summary: `本地历史完整窗口不足 ${MIN_LOCAL_BACKTEST_WINDOWS} 个，轨迹胜率/收益暂不参与决策。`,
       horizons,
     }
   }
@@ -424,7 +426,7 @@ function buildBacktestFactor(
   return {
     status: 'derived',
     sampleSize,
-    summary: `本地回放平均后续收益 ${formatPercent(averageReturn)}，最差后续回撤 ${formatPercent(worstDrawdown)}。`,
+    summary: `本地轨迹完整窗口达标，平均后续收益 ${formatPercent(averageReturn)}，最差后续回撤 ${formatPercent(worstDrawdown)}。`,
     horizons,
   }
 }
@@ -457,13 +459,13 @@ function buildBacktestHorizon(points: HistoryPoint[], minutes: number) {
 
   return {
     label: `${minutes}m`,
-    winRate: returns.length > 0
+    winRate: returns.length >= MIN_LOCAL_BACKTEST_WINDOWS
       ? returns.filter((value) => value > 0).length / returns.length
       : null,
-    averageReturn: returns.length > 0
+    averageReturn: returns.length >= MIN_LOCAL_BACKTEST_WINDOWS
       ? returns.reduce((sum, value) => sum + value, 0) / returns.length
       : null,
-    maxDrawdownAfterSignal: drawdowns.length > 0
+    maxDrawdownAfterSignal: drawdowns.length >= MIN_LOCAL_BACKTEST_WINDOWS
       ? Math.min(...drawdowns)
       : null,
   }
@@ -744,9 +746,9 @@ function buildGoldRuleFactors(
     buildRule('央行购金中长期锚', factors, (map) => scoreRuleHigh(map.get('CENTRAL_BANK_GOLD')?.score, 56)),
     buildRule('CME 持仓参与度', factors, (map) => scoreRuleHigh(map.get('CME_GOLD_OI')?.score, 56)),
     buildRule('CME 成交活跃度', factors, (map) => scoreRuleHigh(map.get('CME_GOLD_VOLUME')?.score, 56)),
-    buildRule('本地回测胜率', factors, () => scoreBacktestRule(backtest, 'winRate')),
-    buildRule('本地回测收益', factors, () => scoreBacktestRule(backtest, 'averageReturn')),
-    buildRule('本地回测回撤', factors, () => scoreBacktestRule(backtest, 'maxDrawdownAfterSignal')),
+    buildRule('本地轨迹胜率', factors, () => scoreBacktestRule(backtest, 'winRate')),
+    buildRule('本地轨迹收益', factors, () => scoreBacktestRule(backtest, 'averageReturn')),
+    buildRule('本地轨迹回撤', factors, () => scoreBacktestRule(backtest, 'maxDrawdownAfterSignal')),
     buildRule('多源数据覆盖', factors, () => factors.filter((item) => item.status === 'live').length >= 8 ? 1 : 0),
   ]
   const bullishCount = rules.filter((rule) => rule > 0).length

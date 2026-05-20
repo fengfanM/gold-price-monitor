@@ -20,14 +20,20 @@ import {
 } from './market-providers.js'
 import { buildDataQuality, detectQuoteAnomalies } from './quality.js'
 import { fetchSgeReferenceQuotes } from './sge.js'
-import { buildBacktestMonitor, buildExternalModelBacktestGate } from './backtest.js'
+import {
+  buildBacktestMonitor,
+  buildBacktestSnapshotsFromHistory,
+  buildExternalModelBacktestGate,
+} from './backtest.js'
 import { detectPatternSignals } from './patterns.js'
 import { fetchExternalModelAdvisor } from './external-model-advisor.js'
 import {
   loadHistory,
   loadMarketContext,
   loadBacktestSnapshots,
+  mergeBacktestSnapshots,
   saveBacktestSnapshot,
+  saveBacktestSnapshots,
   saveFactors,
   saveHistory,
   saveMarketContext,
@@ -47,6 +53,10 @@ const ENABLE_INLINE_MARKET_CONTEXT =
   process.env.ENABLE_INLINE_MARKET_CONTEXT === undefined
     ? process.env.VERCEL !== '1'
     : process.env.ENABLE_INLINE_MARKET_CONTEXT === '1'
+const ENABLE_HISTORY_BACKTEST_SEED =
+  process.env.ENABLE_HISTORY_BACKTEST_SEED === undefined
+    ? true
+    : process.env.ENABLE_HISTORY_BACKTEST_SEED === '1'
 
 export class QuoteService {
   private history: HistoryPoint[] = []
@@ -59,6 +69,7 @@ export class QuoteService {
   private latestMarketContext: MarketContext | null = null
   private latestMarketContextBuiltAt = 0
   private latestExternalModelAdvisor: Awaited<ReturnType<typeof fetchExternalModelAdvisor>> | null = null
+  private latestBacktestSeedAt = 0
 
   async init() {
     const [history, marketContext] = await Promise.all([
@@ -70,6 +81,7 @@ export class QuoteService {
     this.latestMarketContextBuiltAt = marketContext
       ? new Date(marketContext.updatedAt).getTime()
       : 0
+    await this.seedBacktestSnapshotsFromHistory()
     try {
       await this.refresh()
     } catch (error) {
@@ -194,7 +206,9 @@ export class QuoteService {
   }
 
   async getBacktestMonitor(): Promise<BacktestMonitor> {
-    return buildBacktestMonitor(await loadBacktestSnapshots())
+    await this.seedBacktestSnapshotsFromHistory()
+    const snapshots = await loadBacktestSnapshots()
+    return buildBacktestMonitor(snapshots, selectBacktestHorizonMinutes(snapshots))
   }
 
   private async performRefresh() {
@@ -424,6 +438,27 @@ export class QuoteService {
     }
 
     return this.buildMarketContextSafely(quote)
+  }
+
+  private async seedBacktestSnapshotsFromHistory() {
+    if (!ENABLE_HISTORY_BACKTEST_SEED || this.history.length < 90) {
+      return
+    }
+    if (Date.now() - this.latestBacktestSeedAt < 60_000) {
+      return
+    }
+    this.latestBacktestSeedAt = Date.now()
+
+    const existing = await loadBacktestSnapshots()
+    const historicalSnapshots = buildBacktestSnapshotsFromHistory(this.history)
+    if (historicalSnapshots.length < 90) {
+      return
+    }
+
+    const merged = mergeBacktestSnapshots(existing, historicalSnapshots)
+    if (merged.length > existing.length) {
+      await saveBacktestSnapshots(merged)
+    }
   }
 
   private markSuccess(channel: 'official' | 'fallback') {
@@ -690,6 +725,31 @@ function sourceHealthFromStatus(sourceStatus: SourceStatus) {
     return 'stale' as const
   }
   return active.status === 'healthy' ? 'healthy' as const : 'down' as const
+}
+
+function selectBacktestHorizonMinutes(
+  snapshots: Array<{ quoteTimestamp: string }>,
+) {
+  if (snapshots.length < 2) {
+    return 5
+  }
+  const timestamps = snapshots
+    .map((snapshot) => new Date(snapshot.quoteTimestamp).getTime())
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => left - right)
+  const first = timestamps[0]
+  const last = timestamps[timestamps.length - 1]
+  const spanMinutes = first === undefined || last === undefined
+    ? 0
+    : (last - first) / 60_000
+
+  if (spanMinutes >= 90) {
+    return 60
+  }
+  if (spanMinutes >= 25) {
+    return 15
+  }
+  return 5
 }
 
 function normalizeReferencePrice(value: number | null) {

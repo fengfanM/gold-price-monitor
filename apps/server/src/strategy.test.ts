@@ -176,10 +176,64 @@ describe('opportunity strategy engine', () => {
     assert.equal(signal.decisionView.probabilityDisplay.mode, 'hidden')
     assert.equal(signal.decisionView.probabilityDisplay.value, null)
     assert.equal(signal.decisionView.calibrationStatus.canShowNumericProbability, false)
+    assert.equal(signal.canonicalForecast.successRate.value, null)
+    assert.equal(signal.canonicalForecast.successRate.source, 'unavailable')
     assert.equal(signal.canonicalForecast.levels.support, null)
     assert.equal(signal.canonicalForecast.levels.resistance, null)
     assert.equal(signal.decisionView.levelValidation.support.status, 'invalid')
     assert.equal(signal.decisionView.levelValidation.resistance.status, 'invalid')
+  })
+
+  it('marks already-missed trigger prices as non-actionable instead of confirming entry', () => {
+    const signal = evaluateOpportunity({
+      history: [
+        makeHistoryPoint('2026-05-16T09:54:00.000Z', 586),
+        makeHistoryPoint('2026-05-16T09:55:00.000Z', 580),
+        makeHistoryPoint('2026-05-16T09:56:00.000Z', 588),
+        makeHistoryPoint('2026-05-16T09:57:00.000Z', 581),
+        makeHistoryPoint('2026-05-16T09:58:00.000Z', 589),
+      ],
+      latestQuote: makeQuote(590),
+      patternSignals: [{
+        id: 'pattern-double-bottom-missed-trigger',
+        kind: 'double_bottom',
+        label: '双底确认',
+        direction: 'bullish',
+        confidence: 82,
+        confirmationStatus: 'confirmed',
+        confirmationPrice: 588,
+        detectedAt: '2026-05-16T10:00:00.000Z',
+        keyPrice: 581,
+        necklinePrice: 588,
+        invalidationPrice: 579.8,
+        targetPrice: 598,
+        expectedConfirmationBars: 2,
+        summary: '已经站上颈线，但当前价已越过原触发价。',
+        explanation: '测试形态解释。',
+      }],
+      stats: {
+        ...makeStats(),
+        currentPrice: 590,
+        high24h: 596,
+        low24h: 578,
+      },
+      sourceStatus: makeSourceStatus(),
+      technicals: {
+        ma5: 588,
+        ma10: 586,
+        ma20: 584,
+        rsi14: 55,
+        macd: { dif: 0.8, dea: 0.4, histogram: 0.4 },
+        shortTrend: 'rising',
+      },
+    })
+
+    assert.equal(signal.decisionView.version, 'decision-view-v2')
+    assert.equal(signal.decisionView.executionState, 'trigger_missed')
+    assert.equal(signal.decisionView.actionAllowed, false)
+    assert.equal(signal.decisionView.singleCommand.includes('不追'), true)
+    assert.notEqual(signal.finalDecision.action, 'confirm_then_enter')
+    assert.equal(signal.decisionView.validatedLevels.trigger.status, 'invalid')
   })
 
   it('downgrades opportunity when multi-source macro factors are under pressure', () => {

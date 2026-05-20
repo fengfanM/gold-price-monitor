@@ -471,6 +471,9 @@ export type BacktestBucket = {
     | 'cme_breakout_quality'
   sampleSize: number
   qualifiedSamples: number
+  completeQualifiedSamples?: number
+  metricsFrozen?: boolean
+  freezeReason?: string | null
   winRate: number | null
   baselineWinRate: number | null
   averageReturn: number | null
@@ -560,9 +563,13 @@ export type ExternalModelBacktestGate = {
 
 export type BacktestMonitor = {
   updatedAt: string
+  horizonMinutes: number
   sampleSize: number
   allEvaluatedSamples: number
   evaluatedSamples: number
+  completeEvaluatedSamples: number
+  metricsFrozen: boolean
+  freezeReason: string | null
   signalThreshold: number
   winRate: number | null
   baselineWinRate: number | null
@@ -754,6 +761,32 @@ export type DecisionProbabilityDisplay = {
   reason: string
 }
 
+export type ExecutionState =
+  | 'no_trade'
+  | 'watch_only'
+  | 'waiting_for_trigger'
+  | 'trigger_armed'
+  | 'trigger_missed'
+  | 'invalidated'
+  | 'reduce_position'
+
+export type BacktestValidity = {
+  completeSamples: number
+  incompleteSampleRate: number | null
+  metricsEnabled: boolean
+  freezeReason: string | null
+  minSamplesRequired: number
+}
+
+export type SourceHealthViewModel = {
+  tradeSourceStatus: 'live' | 'stale' | 'fallback' | 'offline'
+  referenceSourceStatus: 'live' | 'partial' | 'missing' | 'diverged'
+  macroMirrorStatus: 'learning_only' | 'production_eligible' | 'disabled' | 'unknown'
+  providerProbeStatus: 'live' | 'partial' | 'missing'
+  canUseForStrongSignal: boolean
+  warnings: string[]
+}
+
 export type LevelValidationItem = {
   price: number | null
   status: 'valid' | 'invalid' | 'missing'
@@ -769,12 +802,17 @@ export type LevelValidation = {
 }
 
 export type DecisionViewModel = {
-  version: 'decision-view-v1'
+  version: 'decision-view-v2'
   action: FinalDecisionAction
   displayGrade: FinalDecision['signalGrade']
   primaryInstruction: string
   beginnerInstruction: string
   canAct: boolean
+  executionState: ExecutionState
+  singleCommand: string
+  actionAllowed: boolean
+  actionBlockedReason: string | null
+  displayGuards: string[]
   triggerPrice: number | null
   stopLoss: number | null
   takeProfit1: number | null
@@ -782,6 +820,9 @@ export type DecisionViewModel = {
   probabilityDisplay: DecisionProbabilityDisplay
   calibrationStatus: CalibrationStatus
   levelValidation: LevelValidation
+  validatedLevels: LevelValidation
+  backtestValidity: BacktestValidity
+  sourceHealth: SourceHealthViewModel
   sourceWarnings: string[]
   blockerSummary: string
   updatedAt: string

@@ -23,9 +23,12 @@ describe('selective backtest monitor', () => {
     assert.equal(monitor.allEvaluatedSamples, 8)
     assert.equal(monitor.evaluatedSamples, 4)
     assert.equal(monitor.signalThreshold, 45)
-    assert.equal(monitor.winRate !== null && monitor.baselineWinRate !== null, true)
-    assert.equal((monitor.winRate ?? 0) > (monitor.baselineWinRate ?? 1), true)
-    assert.equal(monitor.reliability > 28, true)
+    assert.equal(monitor.completeEvaluatedSamples, 4)
+    assert.equal(monitor.metricsFrozen, true)
+    assert.equal(monitor.freezeReason?.includes('完整样本'), true)
+    assert.equal(monitor.winRate, null)
+    assert.equal(monitor.profitFactor, null)
+    assert.equal(monitor.reliability, 28)
     assert.equal(monitor.buckets.some((bucket) => bucket.dimension === 'score'), true)
     assert.equal(monitor.buckets.some((bucket) => bucket.mae !== null && bucket.mfe !== null), true)
     assert.equal(monitor.buckets.some((bucket) => bucket.tp1HitRate !== null && bucket.stopLossHitRate !== null), true)
@@ -215,6 +218,29 @@ describe('selective backtest monitor', () => {
     assert.equal(monitor.failureAttribution.some((item) => item.reason === 'sampling_incomplete'), true)
     assert.equal(monitor.failureSamples.length >= 0, true)
     assert.equal(monitor.buckets.some((bucket) => (bucket.timeoutRate ?? 0) > 0), true)
+  })
+
+  it('freezes top-level performance metrics when qualified triple-barrier samples are incomplete', () => {
+    const snapshots = Array.from({ length: 12 }, (_item, index) =>
+      makeSnapshot(
+        new Date(Date.UTC(2026, 4, 16, 9, index)).toISOString(),
+        100 + index * 0.1,
+        72,
+        'watch',
+      ),
+    )
+
+    const monitor = buildBacktestMonitor(snapshots, 120)
+
+    assert.equal(monitor.evaluatedSamples, 11)
+    assert.equal(monitor.completeEvaluatedSamples < 30, true)
+    assert.equal(monitor.metricsFrozen, true)
+    assert.equal(monitor.winRate, null)
+    assert.equal(monitor.baselineWinRate, null)
+    assert.equal(monitor.averageReturn, null)
+    assert.equal(monitor.profitFactor, null)
+    assert.equal(monitor.reliability, 28)
+    assert.equal(monitor.summary.includes('样本未完成'), true)
   })
 })
 
