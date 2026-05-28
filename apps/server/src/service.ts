@@ -93,7 +93,7 @@ export class QuoteService {
   private latestBacktestSeedAt = 0
   private signalJournalRecords: SignalJournalRecord[] = []
 
-  async init() {
+  async init(options: { refreshOnStart?: boolean } = {}) {
     const [history, marketContext, backtestSnapshots, signalJournalRecords] = await Promise.all([
       loadHistory(),
       loadMarketContext(),
@@ -112,10 +112,12 @@ export class QuoteService {
     )
     this.signalJournalRecords = signalJournalRecords
     await this.seedBacktestSnapshotsFromHistory()
-    try {
-      await this.refresh()
-    } catch (error) {
-      this.lastRefreshError = error instanceof Error ? error.message : String(error)
+    if (options.refreshOnStart ?? true) {
+      try {
+        await this.refresh()
+      } catch (error) {
+        this.lastRefreshError = error instanceof Error ? error.message : String(error)
+      }
     }
   }
 

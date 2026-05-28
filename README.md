@@ -285,6 +285,15 @@ npm run build
 npm start
 ```
 
+Stable local preview on the same URL used during product review:
+
+```bash
+npm run build
+npm run preview:daemon
+```
+
+This starts a detached keeper for `http://localhost:8789/?codexV4=1`. If the server process exits, the keeper restarts it and writes logs to `.local-preview/`, which is intentionally ignored by Git.
+
 ## Optional Chronos-Bolt Local Advisor
 
 ```bash

@@ -19,6 +19,7 @@ __pycache__
 .mypy_cache
 reports
 vendor
+.local-preview/
 desktop-ops-agent
 xhs-content-automation
 /.trae/

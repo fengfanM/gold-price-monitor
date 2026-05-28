@@ -25,7 +25,7 @@ async function main() {
   const app = express()
   const service = new QuoteService()
 
-  await service.init()
+  await service.init({ refreshOnStart: false })
 
   app.get('/api/quote', async (_request, response) => {
     try {
@@ -392,6 +392,10 @@ async function main() {
 
   app.listen(PORT, () => {
     console.log(`gold monitor server listening on http://localhost:${PORT}`)
+  })
+
+  void service.refresh().catch((error) => {
+    console.error('startup refresh failed:', error)
   })
 }
 

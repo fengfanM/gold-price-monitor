@@ -18,6 +18,9 @@
     "build": "npm run build:server && npm run build:web",
     "test": "npm run test --workspace server",
     "verify:chronos": "node scripts/verify-chronos-service.mjs",
+    "preview:daemon": "node scripts/start-local-preview-detached.mjs",
+    "preview:keepalive": "node scripts/ensure-local-preview.mjs",
+    "preview:8789": "PORT=8789 npm run start",
     "start": "npm run start --workspace server"
   }
 }
