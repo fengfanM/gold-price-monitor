@@ -21,6 +21,12 @@ reports
 vendor
 desktop-ops-agent
 xhs-content-automation
+/.trae/
+/domestic-freelance-launch-kit/
+/domestic-precious-metals-timing/
+/research/
+/precious_metals_timing_app.py
+/docs/qishui_data_request.md
 docs/reference/kline-gold-trading/library/pdf
 docs/reference/kline-gold-trading/library/txt
 docs/reference/kline-gold-trading/library/data

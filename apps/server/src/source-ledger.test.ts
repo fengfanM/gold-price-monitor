@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { buildQuoteSourceLedger } from './source-ledger.js'
+import { buildQuoteSourceLedger, buildSourceSlaLedger } from './source-ledger.js'
 import type { QuoteSample, SourceStatus } from './types.js'
 
 describe('quote source ledger', () => {
@@ -30,6 +30,20 @@ describe('quote source ledger', () => {
 
     assert.equal(ledger.consensus.status, 'diverged')
     assert.equal(ledger.warnings.some((warning) => warning.includes('报价口径不一致')), true)
+  })
+
+  it('blocks strong-signal eligibility when the trade source diverges from references', () => {
+    const quote = makeQuote(1001.34)
+    quote.marketReference.consensusPrice = 990
+    const sourceStatus = makeSourceStatus()
+    const quoteLedger = buildQuoteSourceLedger(quote, sourceStatus)
+
+    const slaLedger = buildSourceSlaLedger(quote, sourceStatus, quoteLedger)
+
+    assert.equal(slaLedger.version, 'source-sla-ledger-v1')
+    assert.equal(slaLedger.strongSignalEligible, false)
+    assert.equal(slaLedger.entries.some((entry) => entry.health === 'diverged'), true)
+    assert.equal(slaLedger.warnings.some((warning) => warning.includes('强提醒')), true)
   })
 })
 

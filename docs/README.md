@@ -10,6 +10,15 @@
 - [Gold Model Upgrade Research](./GOLD_MODEL_UPGRADE_RESEARCH.md)：模型升级路线与候选模型对比。
 - [Gold Precious Metals Expert Knowledge Base](./GOLD_PRECIOUS_METALS_EXPERT_KNOWLEDGE_BASE.md)：黄金贵金属知识库和策略原则。
 - [Data Source Provider Audit](./DATA_SOURCE_PROVIDER_AUDIT.md)：数据源健康、字段、fallback 和校准审计。
+- [Changelog](../CHANGELOG.md)：面向发布的能力变更、验证和安全边界。
+
+## 当前 v4 决策终端主线
+
+- `DecisionEvidencePacket`：所有行动文案、概率显示、关键价和禁用原因的唯一可信口径。
+- `Source SLA Ledger`：区分可交易源、参考源、离线镜像和禁用源，缺失专业源时透明降级。
+- `Event Intelligence`：CPI、PCE、FOMC、非农、Fed 和地缘风险进入事件阶段；第一波默认不追。
+- `Probability Display Policy`：样本不足、回测未完成、Brier 不达标或数据源异常时隐藏精确概率。
+- `Signal Journal`：记录信号证据、纸面计划、路径结果和失败归因，为后续校准服务。
 
 ## 运维与部署
 

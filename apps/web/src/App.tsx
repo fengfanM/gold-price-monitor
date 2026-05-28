@@ -37,6 +37,7 @@ import './App.css'
 type SourceHealth = 'live' | 'stale' | 'offline'
 type ViewMode = 'intraday' | 'candles'
 type TerminalView = 'dashboard' | 'backtest' | 'providers'
+type ReviewMode = 'beginner' | 'professional'
 type Timeframe = '1m' | '5m' | '15m' | '60m'
 type ChartTimeWindowKind = 'auto' | 'since18' | '6h' | '2h' | 'custom'
 type TimeframeConfig = {
@@ -380,7 +381,7 @@ type FinalDecision = {
 }
 
 type DecisionViewModel = {
-  version: 'decision-view-v2'
+  version: 'decision-view-v2' | 'decision-view-v3' | 'decision-view-v4'
   action: FinalDecision['action']
   displayGrade: FinalDecision['signalGrade']
   primaryInstruction: string
@@ -399,6 +400,12 @@ type DecisionViewModel = {
     mode: 'hidden' | 'tendency' | 'calibrated'
     value: number | null
     label: string
+    reason: string
+  }
+  probabilityPolicy: {
+    status: 'show_calibrated' | 'hide_precise' | 'tendency_only'
+    canShowPrecise: boolean
+    minSamplesRequired: number
     reason: string
   }
   calibrationStatus: {
@@ -437,9 +444,165 @@ type DecisionViewModel = {
     canUseForStrongSignal: boolean
     warnings: string[]
   }
+  sourceLedger: SourceSlaLedger | null
+  decisionEvidence?: DecisionEvidencePacket | null
+  eventIntelligence?: EventIntelligenceResponse | null
+  modelRegistry?: ModelProviderScorecard | null
+  modelScorecard?: ModelProviderScorecard | null
+  signalJournal?: SignalJournalResponse | null
   sourceWarnings: string[]
+  journalPreview: SignalJournalEntry | null
   blockerSummary: string
   updatedAt: string
+}
+
+type SourceSlaLedger = {
+  version: 'source-sla-ledger-v1'
+  generatedAt: string
+  tradeSourceId: string
+  tradePrice: number
+  strongSignalEligible: boolean
+  summary: string
+  entries: Array<{
+    sourceId: string
+    label: string
+    sourceType: 'tradeable_source' | 'reference_source' | 'learning_only_mirror' | 'disabled_source'
+    instrument: string
+    price: number | null
+    timestamp: string | null
+    freshnessMs: number | null
+    health: 'healthy' | 'watch' | 'stale' | 'diverged' | 'missing'
+    discrepancyFromTradePrice: number | null
+    canUseForStrongSignal: boolean
+    note: string
+  }>
+  warnings: string[]
+}
+
+type EventIntelligenceSourceUsage =
+  | 'production_calendar'
+  | 'estimation_only'
+  | 'news_watch_only'
+  | 'mirror_learning'
+
+type EventIntelligenceItem = EconomicEvent & {
+  minutesToEvent: number
+  phase: EconomicEventRisk['phase']
+  riskLevel: EconomicEventRisk['level']
+  scorePenalty: number
+  scoreCap: number
+  positionMultiplier: number
+  sourceUsage: EventIntelligenceSourceUsage
+  sourceBoundary: string
+  isProductionEligible: boolean
+  warnings: string[]
+}
+
+type EventIntelligenceResponse = {
+  version: 'event-intelligence-v4'
+  generatedAt: string
+  current: EconomicEventRisk
+  activeItem: EventIntelligenceItem | null
+  items: EventIntelligenceItem[]
+  sourceBoundaries: Array<{
+    source: EconomicEvent['source']
+    sourceUsage: EventIntelligenceSourceUsage
+    isProductionEligible: boolean
+    participatesInScoring: boolean
+    summary: string
+  }>
+  summary: string
+  usageBoundary: string
+  warnings: string[]
+}
+
+type ModelProviderScorecardEntry = {
+  id: string
+  label: string
+  status: 'active' | 'shadow' | 'disabled'
+  sampleSize: number
+  qualifiedSamples: number
+  reliability: number | null
+  brierScore: number | null
+  profitFactor: number | null
+  weightPolicy: 'full' | 'low_weight' | 'shadow_only' | 'blocked'
+  summary: string
+}
+
+type ModelProviderScorecard = {
+  version: 'model-provider-scorecard-v1'
+  generatedAt: string
+  entries: ModelProviderScorecardEntry[]
+  summary: string
+}
+
+type DecisionEvidencePacket = {
+  version: 'decision-evidence-v4'
+  generatedAt: string
+  quoteTimestamp: string
+  symbol: string
+  price: number
+  singleCommand?: string
+  actionAllowed?: boolean
+  executionState?: DecisionViewModel['executionState']
+  decision: {
+    action: FinalDecision['action']
+    executionState: DecisionViewModel['executionState']
+    command: string
+    score: number
+    level: OpportunityLevel
+    actionAllowed: boolean
+    blockerSummary: string
+  }
+  evidence: Array<{
+    id: string
+    label: string
+    status: 'supporting' | 'opposing' | 'blocking' | 'informational'
+    summary: string
+    sourceUsage: EventIntelligenceSourceUsage | 'production_realtime' | 'reference_calibration' | 'shadow_only'
+  }>
+  eventIntelligence: EventIntelligenceResponse
+  sourceLedger: SourceSlaLedger
+  modelScorecard: ModelProviderScorecard
+  boundary: {
+    productionDecisionInputs: string[]
+    referenceOnlyInputs: string[]
+    learningOnlyInputs: string[]
+  }
+  summary: string
+}
+
+type SignalJournalResponse = {
+  version: 'signal-journal-v1'
+  generatedAt: string
+  entries: SignalJournalEntry[]
+  backtestReference: {
+    sampleSize: number
+    completeSamples: number | null
+    metricsFrozen?: boolean
+    failureAttribution?: FailureAttribution[]
+  } | null
+  summary: string
+}
+
+type SignalJournalEntry = {
+  id: string
+  generatedAt: string
+  quoteTimestamp: string
+  price: number
+  action: FinalDecision['action']
+  executionState: DecisionViewModel['executionState']
+  score: number
+  command: string
+  pattern: PatternSignal['kind'] | null
+  eventPhase: EconomicEventRisk['phase']
+  sourceHealth: DecisionViewModel['sourceHealth']['tradeSourceStatus']
+  riskRewardRatio: number | null
+  probabilityShown: boolean
+  outcome: 'pending' | 'tp1_hit' | 'stop_loss_hit' | 'no_touch' | 'timeout' | 'invalidated'
+  failureReason: 'pending' | 'chasing_risk' | 'event_noise' | 'false_breakout' | 'pattern_failed' | 'macro_pressure' | 'source_health' | 'timeframe_conflict' | 'poor_risk_reward' | 'model_disagreement'
+  bucketKey: string
+  notes: string[]
 }
 
 type LevelValidationItem = {
@@ -549,7 +712,7 @@ type EconomicEvent = {
   category: 'inflation' | 'jobs' | 'fed' | 'growth' | 'geopolitical' | 'liquidity'
   importance: 'S' | 'A' | 'B'
   scheduledAt: string
-  source: 'configured' | 'estimated'
+  source: 'configured' | 'estimated' | 'rss' | 'mirror'
   sourceUrl?: string
   minutesToEvent: number
 }
@@ -696,6 +859,7 @@ type QuotePayload = {
   }
   quality?: DataQualityInfo | null
   sourceLedger?: QuoteSourceLedger | null
+  sourceSlaLedger?: SourceSlaLedger | null
   marketContext?: MarketContext | null
   patternSignals?: PatternSignal[] | null
   opportunity?: OpportunityPayload | null
@@ -931,6 +1095,28 @@ type ChartSignal = {
   detail: string
 }
 
+type TradeDecisionMarker = {
+  id: string
+  side: 'buy' | 'sell'
+  label: 'BUY' | 'SELL'
+  variant: 'entry' | 'exit' | 'risk'
+  targetPrice: number | null
+  reason: string
+}
+
+type TradeOverlayMarker = TradeDecisionMarker & {
+  time: UTCTimestamp
+  value: number
+}
+
+type TradeMarkerPosition = {
+  pinX: number
+  pinY: number
+  labelX: number
+  labelY: number
+  align: 'left' | 'right'
+}
+
 type ChartForecast = {
   intervalLow: number | null
   intervalHigh: number | null
@@ -965,6 +1151,13 @@ type DataStatus = {
   tone: 'warning' | 'error'
   message: string
   detail: string
+}
+
+type V4EvidenceBundle = {
+  eventIntelligence: EventIntelligenceResponse | null
+  decisionEvidence: DecisionEvidencePacket | null
+  modelScorecard: ModelProviderScorecard | null
+  signalJournal: SignalJournalResponse | null
 }
 
 const LIVE_REFRESH_INTERVAL_MS = 3_000
@@ -1052,6 +1245,10 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const [backtestMonitor, setBacktestMonitor] = useState<BacktestMonitor | null>(null)
   const [providerHealth, setProviderHealth] = useState<ProviderHealthPayload | null>(null)
+  const [eventIntelligence, setEventIntelligence] = useState<EventIntelligenceResponse | null>(null)
+  const [decisionEvidence, setDecisionEvidence] = useState<DecisionEvidencePacket | null>(null)
+  const [modelScorecard, setModelScorecard] = useState<ModelProviderScorecard | null>(null)
+  const [signalJournal, setSignalJournal] = useState<SignalJournalResponse | null>(null)
   const [isProbingProviders, setIsProbingProviders] = useState(false)
   const [lastAttemptAt, setLastAttemptAt] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -1120,6 +1317,45 @@ function App() {
     }
   })
 
+  const refreshV4Intelligence = useEffectEvent(async (signal?: AbortSignal) => {
+    const readJson = async <T,>(url: string) => {
+      const response = await fetch(url, {
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+        signal,
+      })
+      const json = response.ok
+        ? await response.json() as ApiEnvelope<T>
+        : null
+      return json?.success ? json.data ?? null : null
+    }
+
+    try {
+      const [eventData, evidenceData, scorecardData, journalData] = await Promise.all([
+        readJson<EventIntelligenceResponse>('/api/event-intelligence'),
+        readJson<DecisionEvidencePacket>('/api/decision-evidence'),
+        readJson<ModelProviderScorecard>('/api/model-scorecard'),
+        readJson<SignalJournalResponse>('/api/journal'),
+      ])
+      if (signal?.aborted) {
+        return
+      }
+      startTransition(() => {
+        setEventIntelligence(eventData)
+        setDecisionEvidence(evidenceData)
+        setModelScorecard(scorecardData)
+        setSignalJournal(journalData)
+      })
+    } catch {
+      if (!signal?.aborted) {
+        setEventIntelligence((current) => current)
+        setDecisionEvidence((current) => current)
+        setModelScorecard((current) => current)
+        setSignalJournal((current) => current)
+      }
+    }
+  })
+
   const probeProviders = useCallback(async () => {
     setIsProbingProviders(true)
     try {
@@ -1159,14 +1395,25 @@ function App() {
     const clockId = window.setInterval(() => {
       setNow(Date.now())
     }, 1_000)
+    const v4Controller = new AbortController()
+    const v4Timer = window.setTimeout(() => {
+      void refreshV4Intelligence(v4Controller.signal)
+    }, 0)
+    const v4IntervalId = window.setInterval(() => {
+      const nextController = new AbortController()
+      void refreshV4Intelligence(nextController.signal)
+    }, BACKTEST_REFRESH_INTERVAL_MS)
 
     return () => {
       controller.abort()
       backtestController.abort()
+      v4Controller.abort()
       window.clearTimeout(timer)
       window.clearInterval(intervalId)
       window.clearTimeout(backtestTimer)
       window.clearInterval(backtestIntervalId)
+      window.clearTimeout(v4Timer)
+      window.clearInterval(v4IntervalId)
       window.clearInterval(clockId)
     }
   }, [])
@@ -1270,6 +1517,10 @@ function App() {
   const anchorPremium = displayAnchor.premiumPercent
   const withinReferenceRange = displayAnchor.withinRange
   const buySignal = useMemo(() => normalizeOpportunity(quote), [quote])
+  const v4Evidence = useMemo(
+    () => mergeV4Evidence(buySignal, eventIntelligence, decisionEvidence, modelScorecard, signalJournal),
+    [buySignal, decisionEvidence, eventIntelligence, modelScorecard, signalJournal],
+  )
   const patternSignals = useMemo(
     () => mergePatternSignals(buySignal?.patternSignals ?? [], quote?.patternSignals ?? []),
     [buySignal?.patternSignals, quote?.patternSignals],
@@ -1646,6 +1897,7 @@ function App() {
               prediction={chartPrediction}
               referenceData={intradayData.reference}
               signal={chartSignal}
+              v4Evidence={v4Evidence}
               tradingSession={chartTradingSession}
               timeframeLabel={activeTimeframe.label}
               visibleRange={chartVisibleRange}
@@ -1663,6 +1915,7 @@ function App() {
               patternSignals={patternSignals}
               prediction={chartPrediction}
               signal={chartSignal}
+              v4Evidence={v4Evidence}
               tradingSession={chartTradingSession}
               timeframeLabel={activeTimeframe.label}
               visibleRange={chartVisibleRange}
@@ -1768,7 +2021,9 @@ function App() {
             )}
             monitor={backtestMonitor}
             signal={buySignal}
+            timeframeMinutes={activeTimeframe.minutes}
             transparency={signalTransparency}
+            v4Evidence={v4Evidence}
           />
         </aside>
       </section>
@@ -1781,13 +2036,23 @@ function OpportunityPanel(props: {
   marketCards?: React.ReactNode
   monitor: BacktestMonitor | null
   signal: OpportunityInfo | null
+  timeframeMinutes: number
   transparency: SignalTransparency
+  v4Evidence: V4EvidenceBundle
 }) {
   const meta = getDecisionMeta(props.signal?.decisionView ?? null, props.signal?.level ?? 'none')
   const [activeTab, setActiveTab] = useState<OpportunityTab>('decision')
+  const [reviewMode, setReviewMode] = useState<ReviewMode>('beginner')
+  const panelRef = useRef<HTMLElement | null>(null)
+  const selectTab = (tab: OpportunityTab) => {
+    setActiveTab(tab)
+    requestAnimationFrame(() => {
+      panelRef.current?.scrollTo({ top: 0 })
+    })
+  }
 
   return (
-    <article className={`panel opportunity-panel opportunity-panel--${meta.tone}`}>
+    <article className={`panel opportunity-panel opportunity-panel--${meta.tone}`} ref={panelRef}>
       <header>
         <AlertTriangle size={16} />
         <strong>观察复核</strong>
@@ -1797,13 +2062,30 @@ function OpportunityPanel(props: {
         <span>Signal Score</span>
         <strong>{formatScore(props.signal?.score ?? null)}</strong>
       </div>
+      <div className="review-mode-toggle" aria-label="复核模式切换">
+        <button
+          className={reviewMode === 'beginner' ? 'is-active' : ''}
+          onClick={() => setReviewMode('beginner')}
+          type="button"
+        >
+          小白模式
+        </button>
+        <button
+          className={reviewMode === 'professional' ? 'is-active' : ''}
+          onClick={() => setReviewMode('professional')}
+          type="button"
+        >
+          专业模式
+        </button>
+        <span>{reviewMode === 'beginner' ? '只看能不能做' : '展开证据链与回测'}</span>
+      </div>
       <div className="opportunity-tabs" role="tablist" aria-label="观察复核功能切换">
         {OPPORTUNITY_TABS.map((tab) => (
           <button
             aria-selected={activeTab === tab.id}
             className={activeTab === tab.id ? 'active' : ''}
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => selectTab(tab.id)}
             role="tab"
             type="button"
           >
@@ -1814,18 +2096,18 @@ function OpportunityPanel(props: {
       <div className="opportunity-tab-panel" role="tabpanel">
         {activeTab === 'decision' ? (
           <>
-            <DecisionBriefPanel signal={props.signal} transparency={props.transparency} />
-            <SignalTransparencyPanel compact transparency={props.transparency} />
-            <SignalList
-              emptyText="暂无核心买点依据"
-              items={(props.signal?.reasons ?? []).slice(0, 3)}
-              title="核心理由"
+            <DecisionCommandPanel
+              signal={props.signal}
+              timeframeMinutes={props.timeframeMinutes}
+              transparency={props.transparency}
+              v4Evidence={props.v4Evidence}
             />
-            <SignalList
-              emptyText="暂无核心风险"
-              items={(props.signal?.risks ?? []).slice(0, 3)}
-              title="核心风险"
-            />
+            {reviewMode === 'professional' ? (
+              <>
+                <EventMacroBroadcastPanel signal={props.signal} v4Evidence={props.v4Evidence} />
+                <SignalTransparencyPanel compact transparency={props.transparency} />
+              </>
+            ) : null}
           </>
         ) : null}
         {activeTab === 'plan' ? (
@@ -1844,22 +2126,39 @@ function OpportunityPanel(props: {
               items={props.signal?.risks ?? []}
               title="全部风险"
             />
+            {!props.signal?.eventRisk && !props.signal?.psychology && (props.signal?.risks ?? []).length < 1 ? (
+              <TabEmptyPanel text="当前没有额外风险卡片；仍需遵守决策页四个硬条件。" />
+            ) : null}
           </>
         ) : null}
         {activeTab === 'evidence' ? (
           <>
+            <V4EvidencePanel evidence={props.v4Evidence} />
             <ConfluencePanel confluence={props.signal?.confluence ?? null} />
-            <ScoreMethodologyPanel monitor={props.monitor} signal={props.signal} />
-            <ExpertCouncil
-              consensus={props.signal?.expertConsensus ?? null}
-              marketContext={props.signal?.marketContext ?? null}
-              opinions={props.signal?.expertOpinions ?? []}
-            />
-            <ValuationPanel valuation={props.signal?.valuation ?? null} />
-            {props.marketCards}
+            <SourceSlaPanel ledger={props.v4Evidence.decisionEvidence?.sourceLedger ?? props.signal?.decisionView?.sourceLedger ?? null} />
+            {reviewMode === 'professional' ? (
+              <>
+                <ScoreMethodologyPanel monitor={props.monitor} signal={props.signal} />
+                <ExpertCouncil
+                  consensus={props.signal?.expertConsensus ?? null}
+                  marketContext={props.signal?.marketContext ?? null}
+                  opinions={props.signal?.expertOpinions ?? []}
+                />
+                <ValuationPanel valuation={props.signal?.valuation ?? null} />
+                {props.marketCards}
+              </>
+            ) : null}
           </>
         ) : null}
-        {activeTab === 'validation' ? <BacktestMonitorPanel monitor={props.monitor} /> : null}
+        {activeTab === 'validation' ? (
+          <>
+            <SignalJournalPreviewPanel
+              entry={props.v4Evidence.signalJournal?.entries[0] ?? props.signal?.decisionView?.journalPreview ?? null}
+              expanded={reviewMode === 'professional'}
+            />
+            {reviewMode === 'professional' ? <BacktestMonitorPanel monitor={props.monitor} /> : null}
+          </>
+        ) : null}
       </div>
       <p className="opportunity-disclaimer">
         信号用于观察和复核，不承诺收益；请结合自身风险承受能力判断。
@@ -1876,35 +2175,107 @@ const OPPORTUNITY_TABS: Array<{ id: OpportunityTab; label: string }> = [
   { id: 'validation', label: '验证' },
 ]
 
-function DecisionBriefPanel(props: {
+function DecisionCommandPanel(props: {
   signal: OpportunityInfo | null
+  timeframeMinutes: number
   transparency: SignalTransparency
+  v4Evidence: V4EvidenceBundle
 }) {
   const decisionView = props.signal?.decisionView ?? null
-  const plan = props.signal?.tradePlan ?? null
-  const action = decisionView?.singleCommand ?? plan?.actionLabel ?? getOpportunityMeta(props.signal?.level ?? 'none').label
-  const position = decisionView?.beginnerInstruction ?? plan?.positionSuggestion ?? props.signal?.summary ?? '等待更多实时样本确认。'
-  const riskRewardValue = decisionView?.riskRewardRatio ?? plan?.riskRewardRatio ?? null
-  const riskReward = riskRewardValue === null
-    ? '--'
-    : `${riskRewardValue}:1`
+  const radar = buildNextActionRadar(props.signal, props.transparency, props.timeframeMinutes)
+  const gates = buildFourHardGates(props.signal, props.transparency, props.v4Evidence)
+  const command = props.v4Evidence.decisionEvidence?.decision.command ??
+    decisionView?.singleCommand ??
+    radar.command
+  const subtitle = decisionView?.beginnerInstruction ??
+    props.signal?.tradePlan?.positionSuggestion ??
+    '没有同时满足触发价、止损、赔率和数据/事件边界前，只复核不追价。'
 
   return (
-    <section className="decision-brief">
+    <section className={`decision-command decision-command--${radar.tone}`}>
       <header>
-        <strong>当前决策</strong>
-        <span>{props.transparency.verdict}</span>
+        <div>
+          <strong>一句口令</strong>
+          <small>{radar.subtitle}</small>
+        </div>
+        <span>{radar.badge}</span>
       </header>
-      <div className="decision-brief__grid">
-        <MetricCard label="动作" value={action} />
-        <MetricCard label="赔率" value={riskReward} />
-        <MetricCard
-          label="TP1先达倾向"
-          value={props.transparency.probability === null ? props.transparency.probabilityLabel : formatProbability(props.transparency.probability)}
-        />
-        <MetricCard label="可靠性" value={props.transparency.reliability === null ? '--' : `${props.transparency.reliability}/100`} />
+      <div className="decision-command__hero">
+        <span>现在只执行这一句</span>
+        <strong>{command}</strong>
+        <small>{subtitle}</small>
       </div>
-      <p>{position}</p>
+      <div className="decision-command__gates" aria-label="四个硬条件">
+        {gates.map((gate) => (
+          <article className={`hard-gate hard-gate--${gate.status}`} key={gate.label}>
+            <span>{hardGateLabel(gate.status)}</span>
+            <strong>{gate.label}</strong>
+            <small>{gate.detail}</small>
+          </article>
+        ))}
+      </div>
+      <p>{props.transparency.guardrail}</p>
+    </section>
+  )
+}
+
+function V4EvidencePanel(props: { evidence: V4EvidenceBundle }) {
+  const packet = props.evidence.decisionEvidence
+  const eventIntel = props.evidence.eventIntelligence ?? packet?.eventIntelligence ?? null
+  const scorecard = props.evidence.modelScorecard ?? packet?.modelScorecard ?? null
+  const rows = packet?.evidence ?? []
+
+  if (!packet && !eventIntel && !scorecard) {
+    return (
+      <section className="v4-evidence-panel v4-evidence-panel--empty">
+        <header>
+          <strong>v4 证据链</strong>
+          <span>兼容 v3</span>
+        </header>
+        <p>后端暂未返回 v4 event intelligence / decision evidence / model registry 字段，页面继续使用 v3 决策视图、SLA 账本和回测信息。</p>
+      </section>
+    )
+  }
+
+  return (
+    <section className="v4-evidence-panel">
+      <header>
+        <strong>v4 证据链</strong>
+        <span>{packet ? '已接入' : '部分接入'}</span>
+      </header>
+      <p>{packet?.summary ?? eventIntel?.summary ?? scorecard?.summary ?? 'v4 证据字段已按可用项展示。'}</p>
+      <div className="v4-evidence-grid">
+        <article>
+          <span>事件智能</span>
+          <strong>{eventIntel?.activeItem ? eventIntel.activeItem.label : eventIntel ? eventRiskLevelLabel(eventIntel.current.level) : '沿用 v3'}</strong>
+          <small>{eventIntel?.usageBoundary ?? '无 v4 事件智能时沿用 eventRisk。'}</small>
+        </article>
+        <article>
+          <span>模型注册</span>
+          <strong>{scorecard ? `${scorecard.entries.filter((entry) => entry.status === 'active').length}/${scorecard.entries.length} active` : '沿用回测'}</strong>
+          <small>{scorecard?.summary ?? '未返回 model registry / scorecard 时沿用 v3 externalModelAdvisor。'}</small>
+        </article>
+      </div>
+      {rows.length > 0 ? (
+        <div className="v4-evidence-list">
+          {rows.slice(0, 4).map((row) => (
+            <article className={`v4-evidence-item v4-evidence-item--${row.status}`} key={row.id}>
+              <strong>{row.label}</strong>
+              <span>{decisionEvidenceStatusLabel(row.status)} · {sourceUsageShortLabel(row.sourceUsage)}</span>
+              <small>{row.summary}</small>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function TabEmptyPanel(props: { text: string }) {
+  return (
+    <section className="tab-empty-panel">
+      <strong>暂无额外内容</strong>
+      <p>{props.text}</p>
     </section>
   )
 }
@@ -1940,6 +2311,137 @@ function SignalTransparencyPanel(props: { compact?: boolean; transparency: Signa
           guardrail={props.transparency.guardrail}
           hardGates={props.transparency.hardGates}
         />
+      ) : null}
+    </section>
+  )
+}
+
+type EventMacroBroadcastTone = 'block' | 'watch' | 'support' | 'neutral'
+
+type EventMacroBroadcastItem = {
+  id: string
+  title: string
+  meta: string
+  detail: string
+  badge: string
+  tone: EventMacroBroadcastTone
+}
+
+function EventMacroBroadcastPanel(props: { signal: OpportunityInfo | null; v4Evidence?: V4EvidenceBundle }) {
+  const broadcast = buildEventMacroBroadcast(props.signal, props.v4Evidence)
+
+  return (
+    <section className={`event-macro-broadcast event-macro-broadcast--${broadcast.tone}`}>
+      <header>
+        <div>
+          <strong>事件/宏观关联播报</strong>
+          <small>{broadcast.subtitle}</small>
+        </div>
+        <span>{broadcast.badge}</span>
+      </header>
+      <div className="event-macro-command">
+        <span>对当前交易动作的影响</span>
+        <strong>{broadcast.command}</strong>
+      </div>
+      <div className="event-macro-feed">
+        {broadcast.items.map((item) => (
+          <article className={`event-macro-item event-macro-item--${item.tone}`} key={item.id}>
+            <div>
+              <strong>{item.title}</strong>
+              <span>{item.badge}</span>
+            </div>
+            <small>{item.meta}</small>
+            <p>{item.detail}</p>
+          </article>
+        ))}
+      </div>
+      <p className="event-macro-boundary">
+        实时、估算、离线镜像会分别标注；慢频宏观和 RSS 情绪只用于降级/解释，不直接构成买入依据。
+      </p>
+    </section>
+  )
+}
+
+function SourceSlaPanel(props: { ledger: SourceSlaLedger | null }) {
+  const ledger = props.ledger
+  if (!ledger) {
+    return (
+      <section className="source-sla-panel source-sla-panel--blocked">
+        <header>
+          <strong>数据源 SLA 账本</strong>
+          <span>等待后端账本</span>
+        </header>
+        <p>当前快照暂未携带 v3 数据源 SLA。页面不会因此放大强提醒，只按原始数据健康和锚点规则降级处理。</p>
+      </section>
+    )
+  }
+  const entries = Array.isArray(ledger.entries) ? ledger.entries : []
+  const warnings = Array.isArray(ledger.warnings) ? ledger.warnings : []
+  return (
+    <section className={`source-sla-panel source-sla-panel--${ledger.strongSignalEligible ? 'ready' : 'blocked'}`}>
+      <header>
+        <strong>数据源 SLA 账本</strong>
+        <span>{ledger.strongSignalEligible ? '可进入强提醒候选' : '强提醒降级'}</span>
+      </header>
+      <p>{ledger.summary}</p>
+      <div className="source-sla-grid">
+        {entries.slice(0, 5).map((entry) => (
+          <article className={`source-sla-entry source-sla-entry--${entry.health}`} key={entry.sourceId}>
+            <span>{sourceSlaTypeLabel(entry.sourceType)}</span>
+            <strong>{entry.label}</strong>
+            <small>
+              {entry.price === null ? '--' : currencyFormatter.format(entry.price)}
+              {' · '}
+              {sourceSlaHealthLabel(entry.health)}
+              {entry.discrepancyFromTradePrice !== null ? ` · 偏离 ${formatSignedPercent(entry.discrepancyFromTradePrice)}` : ''}
+            </small>
+          </article>
+        ))}
+      </div>
+      {warnings.length > 0 ? (
+        <ul>
+          {warnings.slice(0, 3).map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  )
+}
+
+function SignalJournalPreviewPanel(props: { entry: SignalJournalEntry | null; expanded?: boolean }) {
+  const entry = props.entry
+  if (!entry) {
+    return (
+      <section className="signal-journal-preview">
+        <header>
+          <strong>实战复盘种子</strong>
+          <span>等待记录</span>
+        </header>
+        <p>当前信号尚未形成可复盘记录。系统会优先隐藏未验证概率，不把缺样本包装成高胜率。</p>
+      </section>
+    )
+  }
+  const notes = Array.isArray(entry.notes) ? entry.notes : []
+  return (
+    <section className="signal-journal-preview">
+      <header>
+        <strong>实战复盘种子</strong>
+        <span>{signalOutcomeLabel(entry.outcome)} · {failureReasonLabel(entry.failureReason)}</span>
+      </header>
+      <div className="signal-journal-grid">
+        <MetricCard label="记录价" value={currencyFormatter.format(entry.price)} />
+        <MetricCard label="状态" value={executionStateLabel(entry.executionState)} />
+        <MetricCard label="赔率" value={entry.riskRewardRatio === null ? '--' : `${entry.riskRewardRatio}:1`} />
+        <MetricCard label="概率" value={entry.probabilityShown ? '已校准展示' : '隐藏精确值'} />
+      </div>
+      <p>{entry.command}</p>
+      {props.expanded ? (
+        <ul>
+          {notes.slice(0, 4).map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
       ) : null}
     </section>
   )
@@ -3762,6 +4264,7 @@ function IntradayChartPanel(props: {
   prediction: ChartPrediction
   signal: ChartSignal
   patternSignals: PatternSignal[]
+  v4Evidence: V4EvidenceBundle
   isLoading: boolean
   tradingSession: QuotePayload['marketReference']['tradingSession'] | null
   timeframeLabel: string
@@ -3772,6 +4275,7 @@ function IntradayChartPanel(props: {
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [hover, setHover] = useState<IntradayHover | null>(null)
+  const [tradeMarkerPosition, setTradeMarkerPosition] = useState<TradeMarkerPosition | null>(null)
   const latestPoint = props.priceData[props.priceData.length - 1] ?? null
   const extremes = useMemo(() => buildLineExtremes(props.priceData), [props.priceData])
   const syntheticCandles = useMemo(() => lineDataToSyntheticCandles(props.priceData), [props.priceData])
@@ -3788,9 +4292,13 @@ function IntradayChartPanel(props: {
     () => buildChartForecast(props.latestPrice, extremes, props.prediction, props.patternSignals, props.opportunity),
     [extremes, props.latestPrice, props.opportunity, props.patternSignals, props.prediction],
   )
+  const tradeOverlay = useMemo(
+    () => buildLineTradeOverlayMarker(props.priceData, props.opportunity),
+    [props.opportunity, props.priceData],
+  )
   const markers = useMemo(
-    () => buildLineMarkers(props.priceData, extremes, props.signal, props.patternSignals),
-    [extremes, props.priceData, props.signal, props.patternSignals],
+    () => buildLineMarkers(props.priceData, extremes, props.signal, props.patternSignals, tradeOverlay),
+    [extremes, props.priceData, props.signal, props.patternSignals, tradeOverlay],
   )
 
   useEffect(() => {
@@ -3800,6 +4308,7 @@ function IntradayChartPanel(props: {
 
     const container = containerRef.current
     const chart = createChart(container, chartOptions(container))
+    let tradeMarkerFrame = 0
     const userInteractedRef = { current: false }
     const markUserInteracted = () => {
       userInteractedRef.current = true
@@ -3831,6 +4340,23 @@ function IntradayChartPanel(props: {
     if (props.referenceData.length > 1) {
       referenceSeries.setData(props.referenceData)
     }
+    const updateTradeMarkerPosition = () => {
+      if (!tradeOverlay) {
+        setTradeMarkerPosition(null)
+        return
+      }
+      setTradeMarkerPosition(buildTradeMarkerPosition(
+        container,
+        chart.timeScale().timeToCoordinate(tradeOverlay.time),
+        priceSeries.priceToCoordinate(tradeOverlay.value),
+        tradeOverlay.side,
+      ))
+    }
+    const scheduleTradeMarkerPosition = () => {
+      cancelAnimationFrame(tradeMarkerFrame)
+      tradeMarkerFrame = requestAnimationFrame(updateTradeMarkerPosition)
+    }
+    scheduleTradeMarkerPosition()
     const ma5Series = showMa ? chart.addSeries(LineSeries, {
       color: '#f59e0b',
       lineWidth: 1,
@@ -3880,6 +4406,7 @@ function IntradayChartPanel(props: {
       if (normalized) {
         props.onVisibleRangeChange(normalized)
       }
+      scheduleTradeMarkerPosition()
     }
     chart.timeScale().subscribeVisibleTimeRangeChange(handleVisibleRangeChange)
     chart.subscribeCrosshairMove((param: MouseEventParams<Time>) => {
@@ -3912,12 +4439,14 @@ function IntradayChartPanel(props: {
       }
 
       chart.applyOptions(nextSize)
+      scheduleTradeMarkerPosition()
     })
 
     observer.observe(container)
 
     return () => {
       chart.timeScale().unsubscribeVisibleTimeRangeChange(handleVisibleRangeChange)
+      cancelAnimationFrame(tradeMarkerFrame)
       container.removeEventListener('pointerdown', markUserInteracted)
       container.removeEventListener('wheel', markUserInteracted)
       container.removeEventListener('touchstart', markUserInteracted)
@@ -3935,6 +4464,7 @@ function IntradayChartPanel(props: {
     props.patternSignals,
     props.visibleRange,
     props.onVisibleRangeChange,
+    tradeOverlay,
     showBoll,
     showMa,
     ma5Data,
@@ -3989,12 +4519,21 @@ function IntradayChartPanel(props: {
           {props.isLoading ? '正在加载' : '样本不足'}
         </div>
       ) : (
-        <div className="lw-chart" ref={containerRef} />
+        <div className="chart-canvas-shell">
+          <div className="lw-chart" ref={containerRef} />
+          <TradeMarkerBadge marker={tradeOverlay} position={tradeMarkerPosition} />
+        </div>
       )}
       <ChartRangeScrubber
         embedded
         info={props.rangeScrubberInfo}
         onChange={props.onRangeScrubberChange}
+      />
+      <ChartMarkerSummary
+        eventIntelligence={props.v4Evidence.eventIntelligence}
+        eventRisk={props.opportunity?.eventRisk ?? null}
+        patterns={props.patternSignals}
+        tradeOverlay={tradeOverlay}
       />
       <IndicatorPanel
         boll={bollData}
@@ -4015,6 +4554,7 @@ function CandlestickChartPanel(props: {
   prediction: ChartPrediction
   signal: ChartSignal
   patternSignals: PatternSignal[]
+  v4Evidence: V4EvidenceBundle
   isLoading: boolean
   tradingSession: QuotePayload['marketReference']['tradingSession'] | null
   timeframeLabel: string
@@ -4025,6 +4565,7 @@ function CandlestickChartPanel(props: {
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [hover, setHover] = useState<CandleHover | null>(null)
+  const [tradeMarkerPosition, setTradeMarkerPosition] = useState<TradeMarkerPosition | null>(null)
   const latestCandle = props.candleData[props.candleData.length - 1] ?? null
   const ma5Data = useMemo(() => buildMovingAverageData(props.candleData, 5), [props.candleData])
   const ma10Data = useMemo(() => buildMovingAverageData(props.candleData, 10), [props.candleData])
@@ -4044,9 +4585,13 @@ function CandlestickChartPanel(props: {
     () => buildChartForecast(props.latestPrice, extremes, props.prediction, props.patternSignals, props.opportunity),
     [extremes, props.latestPrice, props.opportunity, props.patternSignals, props.prediction],
   )
+  const tradeOverlay = useMemo(
+    () => buildCandleTradeOverlayMarker(props.candleData, props.opportunity),
+    [props.candleData, props.opportunity],
+  )
   const markers = useMemo(
-    () => buildCandleMarkers(props.candleData, extremes, props.signal, props.patternSignals),
-    [extremes, props.candleData, props.signal, props.patternSignals],
+    () => buildCandleMarkers(props.candleData, extremes, props.signal, props.patternSignals, tradeOverlay),
+    [extremes, props.candleData, props.signal, props.patternSignals, tradeOverlay],
   )
 
   useEffect(() => {
@@ -4056,6 +4601,7 @@ function CandlestickChartPanel(props: {
 
     const container = containerRef.current
     const chart = createChart(container, chartOptions(container))
+    let tradeMarkerFrame = 0
     const userInteractedRef = { current: false }
     const markUserInteracted = () => {
       userInteractedRef.current = true
@@ -4078,6 +4624,23 @@ function CandlestickChartPanel(props: {
     addExtremePriceLines(candleSeries, extremes)
     addPatternPriceLines(candleSeries, props.patternSignals)
     addForecastPriceLines(candleSeries, forecast)
+    const updateTradeMarkerPosition = () => {
+      if (!tradeOverlay) {
+        setTradeMarkerPosition(null)
+        return
+      }
+      setTradeMarkerPosition(buildTradeMarkerPosition(
+        container,
+        chart.timeScale().timeToCoordinate(tradeOverlay.time),
+        candleSeries.priceToCoordinate(tradeOverlay.value),
+        tradeOverlay.side,
+      ))
+    }
+    const scheduleTradeMarkerPosition = () => {
+      cancelAnimationFrame(tradeMarkerFrame)
+      tradeMarkerFrame = requestAnimationFrame(updateTradeMarkerPosition)
+    }
+    scheduleTradeMarkerPosition()
     const ma5Series = showMa ? chart.addSeries(LineSeries, {
       color: '#f59e0b',
       lineWidth: 1,
@@ -4133,6 +4696,7 @@ function CandlestickChartPanel(props: {
       if (normalized) {
         props.onVisibleRangeChange(normalized)
       }
+      scheduleTradeMarkerPosition()
     }
     chart.timeScale().subscribeVisibleTimeRangeChange(handleVisibleRangeChange)
     chart.subscribeCrosshairMove((param: MouseEventParams<Time>) => {
@@ -4188,12 +4752,14 @@ function CandlestickChartPanel(props: {
       }
 
       chart.applyOptions(nextSize)
+      scheduleTradeMarkerPosition()
     })
 
     observer.observe(container)
 
     return () => {
       chart.timeScale().unsubscribeVisibleTimeRangeChange(handleVisibleRangeChange)
+      cancelAnimationFrame(tradeMarkerFrame)
       container.removeEventListener('pointerdown', markUserInteracted)
       container.removeEventListener('wheel', markUserInteracted)
       container.removeEventListener('touchstart', markUserInteracted)
@@ -4212,6 +4778,7 @@ function CandlestickChartPanel(props: {
     props.patternSignals,
     props.visibleRange,
     props.onVisibleRangeChange,
+    tradeOverlay,
     showBoll,
     showMa,
   ])
@@ -4244,12 +4811,21 @@ function CandlestickChartPanel(props: {
           {props.isLoading ? '正在加载' : '样本不足'}
         </div>
       ) : (
-        <div className="lw-chart" ref={containerRef} />
+        <div className="chart-canvas-shell">
+          <div className="lw-chart" ref={containerRef} />
+          <TradeMarkerBadge marker={tradeOverlay} position={tradeMarkerPosition} />
+        </div>
       )}
       <ChartRangeScrubber
         embedded
         info={props.rangeScrubberInfo}
         onChange={props.onRangeScrubberChange}
+      />
+      <ChartMarkerSummary
+        eventIntelligence={props.v4Evidence.eventIntelligence}
+        eventRisk={props.opportunity?.eventRisk ?? null}
+        patterns={props.patternSignals}
+        tradeOverlay={tradeOverlay}
       />
       <IndicatorPanel
         boll={bollData}
@@ -4269,6 +4845,108 @@ function DataItem(props: { label: string; value: string; tone?: 'up' | 'down' })
       <strong className={props.tone ?? ''}>{props.value}</strong>
     </span>
   )
+}
+
+function TradeMarkerBadge(props: {
+  marker: TradeOverlayMarker | null
+  position: TradeMarkerPosition | null
+}) {
+  if (!props.marker || !props.position) {
+    return null
+  }
+
+  return (
+    <div className={`trade-marker-layer trade-marker-layer--${props.marker.side}`}>
+      <span
+        className="trade-marker-pin"
+        style={{ left: props.position.pinX, top: props.position.pinY }}
+      />
+      <aside
+        className={`trade-marker-badge trade-marker-badge--${props.position.align}`}
+        style={{ left: props.position.labelX, top: props.position.labelY }}
+        title={props.marker.reason}
+      >
+        {props.marker.side === 'buy' ? 'B' : 'S'}
+      </aside>
+    </div>
+  )
+}
+
+function ChartMarkerSummary(props: {
+  eventIntelligence: EventIntelligenceResponse | null
+  eventRisk: EconomicEventRisk | null
+  patterns: PatternSignal[]
+  tradeOverlay: TradeOverlayMarker | null
+}) {
+  const activeEvent = props.eventIntelligence?.activeItem ?? props.eventRisk?.activeEvent ?? null
+  const eventLabel = activeEvent
+    ? `${activeEvent.label} · ${eventPhaseLabel(getChartMarkerEventPhase(props.eventIntelligence, props.eventRisk))}`
+    : props.eventRisk && props.eventRisk.level !== 'none'
+      ? eventRiskLevelLabel(props.eventRisk.level)
+      : '无近端事件标记'
+  const signalLabel = props.tradeOverlay
+    ? `${props.tradeOverlay.label} · ${props.tradeOverlay.reason}`
+    : props.patterns[0]
+      ? `${props.patterns[0].label} · ${patternStatusLabel(props.patterns[0])}`
+      : '暂无交易/形态标记'
+
+  return (
+    <section className="chart-marker-summary" aria-label="图表事件和信号标记摘要">
+      <article>
+        <span>事件标记</span>
+        <strong>{eventLabel}</strong>
+        <small>{props.eventIntelligence?.usageBoundary ?? 'v4 事件智能缺失时沿用 v3 eventRisk；估算事件只做风控说明。'}</small>
+      </article>
+      <article>
+        <span>信号标记</span>
+        <strong>{signalLabel}</strong>
+        <small>{props.patterns.length > 0 ? `形态 ${props.patterns.length} 个，最多展示前三个摘要。` : '没有标记不代表模块白屏，只代表条件未触发。'}</small>
+      </article>
+      <article>
+        <span>标签避让</span>
+        <strong>自动贴边避让</strong>
+        <small>交易 B/S 标签会根据靠近右边界切换左右锚点，并限制在图表内，避免压住价格轴和空白外溢。</small>
+      </article>
+    </section>
+  )
+}
+
+function getChartMarkerEventPhase(
+  eventIntelligence: EventIntelligenceResponse | null,
+  eventRisk: EconomicEventRisk | null,
+): EconomicEventRisk['phase'] {
+  return eventIntelligence?.activeItem?.phase ?? eventRisk?.phase ?? 'normal'
+}
+
+function buildTradeMarkerPosition(
+  container: HTMLElement,
+  timeCoordinate: number | null,
+  priceCoordinate: number | null,
+  side: TradeDecisionMarker['side'],
+): TradeMarkerPosition | null {
+  if (timeCoordinate === null || priceCoordinate === null) {
+    return null
+  }
+  const width = container.clientWidth
+  const height = container.clientHeight
+  if (width <= 0 || height <= 0) {
+    return null
+  }
+
+  const pinX = clamp(timeCoordinate, 10, Math.max(10, width - 10))
+  const pinY = clamp(priceCoordinate, 10, Math.max(10, height - 10))
+  const labelWidth = 22
+  const labelHeight = 22
+  const horizontalGap = 5
+  const align = pinX > width - labelWidth - horizontalGap - 12 ? 'left' : 'right'
+  const rawLabelX = align === 'right'
+    ? pinX + horizontalGap
+    : pinX - labelWidth - horizontalGap
+  const labelX = clamp(rawLabelX, 8, Math.max(8, width - labelWidth - 8))
+  const verticalOffset = side === 'buy' ? 4 : labelHeight + 4
+  const labelY = clamp(pinY - verticalOffset, 8, Math.max(8, height - labelHeight - 8))
+
+  return { pinX, pinY, labelX, labelY, align }
 }
 
 function formatTradingSessionStatus(session: QuotePayload['marketReference']['tradingSession'] | null) {
@@ -4538,6 +5216,120 @@ function patternDisabledText(pattern: PatternSignal) {
   return conditions.join('、')
 }
 
+function mergeV4Evidence(
+  signal: OpportunityInfo | null,
+  eventIntelligence: EventIntelligenceResponse | null,
+  decisionEvidence: DecisionEvidencePacket | null,
+  modelScorecard: ModelProviderScorecard | null,
+  signalJournal: SignalJournalResponse | null,
+): V4EvidenceBundle {
+  const decisionView = signal?.decisionView ?? null
+  return {
+    eventIntelligence:
+      decisionEvidence?.eventIntelligence ??
+      eventIntelligence ??
+      decisionView?.eventIntelligence ??
+      null,
+    decisionEvidence: decisionEvidence ?? decisionView?.decisionEvidence ?? null,
+    modelScorecard:
+      modelScorecard ??
+      decisionEvidence?.modelScorecard ??
+      decisionView?.modelRegistry ??
+      decisionView?.modelScorecard ??
+      null,
+    signalJournal: signalJournal ?? decisionView?.signalJournal ?? null,
+  }
+}
+
+function buildFourHardGates(
+  signal: OpportunityInfo | null,
+  transparency: SignalTransparency,
+  evidence: V4EvidenceBundle,
+): SignalTransparency['hardGates'] {
+  const decisionView = signal?.decisionView ?? null
+  const fallback = transparency.hardGates.slice(0, 4)
+  const sourceGate = evidence.decisionEvidence?.sourceLedger
+    ? {
+        label: '数据源',
+        status: evidence.decisionEvidence.sourceLedger.strongSignalEligible ? 'pass' : 'block',
+        detail: evidence.decisionEvidence.sourceLedger.summary,
+      } satisfies SignalTransparency['hardGates'][number]
+    : fallback.find((gate) => gate.label.includes('数据') || gate.label.includes('源'))
+  const eventGate = evidence.eventIntelligence
+    ? {
+        label: '事件窗口',
+        status: evidence.eventIntelligence.current.level === 'critical'
+          ? 'block'
+          : evidence.eventIntelligence.current.level === 'elevated'
+            ? 'watch'
+            : 'pass',
+        detail: evidence.eventIntelligence.summary,
+      } satisfies SignalTransparency['hardGates'][number]
+    : fallback.find((gate) => gate.label.includes('事件') || gate.label.includes('纪律'))
+  const modelGate = evidence.modelScorecard
+    ? {
+        label: '模型/样本',
+        status: evidence.modelScorecard.entries.some((entry) => entry.weightPolicy === 'full' || entry.weightPolicy === 'low_weight')
+          ? 'pass'
+          : 'watch',
+        detail: evidence.modelScorecard.summary,
+      } satisfies SignalTransparency['hardGates'][number]
+    : fallback.find((gate) => gate.label.includes('样本') || gate.label.includes('模型') || gate.label.includes('回测'))
+
+  const gates = [
+    {
+      label: '触发价/止损',
+      status: decisionView?.validatedLevels.trigger.status === 'valid' && decisionView.validatedLevels.stopLoss.status === 'valid'
+        ? 'pass'
+        : decisionView
+          ? 'block'
+          : 'watch',
+      detail: decisionView
+        ? `触发 ${formatMaybePrice(decisionView.triggerPrice)}；止损 ${formatMaybePrice(decisionView.stopLoss)}`
+        : '等待后端返回关键价校验。',
+    },
+    {
+      label: '赔率',
+      status: decisionView?.riskRewardRatio !== null && decisionView?.riskRewardRatio !== undefined && decisionView.riskRewardRatio >= 2.5
+        ? 'pass'
+        : decisionView?.riskRewardRatio
+          ? 'watch'
+          : 'block',
+      detail: decisionView?.riskRewardRatio ? `${decisionView.riskRewardRatio}:1；低于门槛只观察。` : '未形成可执行赔率。',
+    },
+    sourceGate ?? fallback[0],
+    eventGate ?? modelGate ?? fallback[1],
+  ].filter((gate): gate is SignalTransparency['hardGates'][number] => Boolean(gate))
+
+  return gates.slice(0, 4)
+}
+
+function decisionEvidenceStatusLabel(status: DecisionEvidencePacket['evidence'][number]['status']) {
+  if (status === 'supporting') {
+    return '支持'
+  }
+  if (status === 'opposing') {
+    return '反向'
+  }
+  if (status === 'blocking') {
+    return '阻断'
+  }
+  return '信息'
+}
+
+function sourceUsageShortLabel(sourceUsage: DecisionEvidencePacket['evidence'][number]['sourceUsage']) {
+  if (sourceUsage === 'production_calendar' || sourceUsage === 'production_realtime') {
+    return '生产'
+  }
+  if (sourceUsage === 'reference_calibration' || sourceUsage === 'estimation_only') {
+    return '参考'
+  }
+  if (sourceUsage === 'shadow_only' || sourceUsage === 'mirror_learning' || sourceUsage === 'news_watch_only') {
+    return '学习'
+  }
+  return sourceUsage
+}
+
 function ChartInsightDeck(props: {
   monitor: BacktestMonitor | null
   providerHealth: ProviderHealthPayload | null
@@ -4627,7 +5419,8 @@ function buildScoreMethodology(signal: OpportunityInfo | null, monitor: Backtest
   const score = normalizeScoreNumber(signal?.score)
   const macroScore = normalizeScoreNumber(signal?.marketContext?.factorScore)
   const valuationScore = normalizeScoreNumber(signal?.valuation?.score)
-  const metricsEnabled = signal?.decisionView?.backtestValidity.metricsEnabled ?? !monitor?.metricsFrozen
+  const metricsEnabled = signal?.decisionView?.backtestValidity.metricsEnabled === true ||
+    monitor?.metricsFrozen === false
   const horizonWinRate = metricsEnabled ? signal?.marketContext?.backtest.horizons[0]?.winRate ?? null : null
   const backtestScore = metricsEnabled && typeof monitor?.winRate === 'number'
     ? Math.round(monitor.winRate * 100)
@@ -4726,12 +5519,14 @@ function buildSignalTransparency(
   const hasStopLoss = typeof signal?.tradePlan?.stopLoss === 'number'
   const eventRisk = signal?.eventRisk?.level ?? 'none'
   const psychologyAction = signal?.psychology?.action ?? 'allow_plan'
-  const calibrationConfidence = canShowProbability
+  const metricsAvailable = decisionView?.backtestValidity.metricsEnabled === true || monitor?.metricsFrozen === false
+  const calibrationConfidence = metricsAvailable
     ? Math.round(clamp(
         prediction.confidence * 0.45 +
           (reliability ?? 42) * 0.28 +
           Math.min(18, sampleSize * 1.5) +
           sourceCoverage * 14 -
+          calibrationPenaltyFromBrier(decisionView?.calibrationStatus.brierScore ?? null) -
           (eventRisk === 'critical' ? 12 : eventRisk === 'elevated' ? 6 : 0),
         20,
         92,
@@ -4741,7 +5536,7 @@ function buildSignalTransparency(
   const hardGates: SignalTransparency['hardGates'] = [
     {
       label: '样本门槛',
-      status: decisionView?.backtestValidity.metricsEnabled ? 'pass' : sampleSize >= 10 ? 'watch' : 'block',
+      status: metricsAvailable ? 'pass' : sampleSize >= 10 ? 'watch' : 'block',
       detail: decisionView?.backtestValidity.freezeReason ??
         (sampleSize > 0 ? `完整样本 ${sampleSize} 个` : '等待回测样本积累'),
     },
@@ -4778,7 +5573,7 @@ function buildSignalTransparency(
     probability,
     probabilityLabel: probabilityDisplay?.label ?? prediction.displayText,
     probabilityReason: probabilityDisplay?.reason ?? prediction.basis,
-    winRate: decisionView?.backtestValidity.metricsEnabled ? monitor?.winRate ?? null : null,
+    winRate: metricsAvailable ? monitor?.winRate ?? null : null,
     calibrationConfidence,
     reliability,
     sampleSize,
@@ -4789,6 +5584,337 @@ function buildSignalTransparency(
         ? '存在硬门槛未通过时，页面只给观察优先级，不应把它解读为可执行买入。'
         : '全部硬门槛通过后仍需分批、止损和仓位上限；概率代表历史相似条件下的倾向，不是确定性。'),
     hardGates,
+  }
+}
+
+function calibrationPenaltyFromBrier(brierScore: number | null | undefined) {
+  if (brierScore === null || brierScore === undefined || !Number.isFinite(brierScore)) {
+    return 10
+  }
+  if (brierScore <= 0.22) {
+    return 0
+  }
+  return Math.min(26, Math.round((brierScore - 0.22) * 220))
+}
+
+type NextActionRadarTone = 'block' | 'watch' | 'ready' | 'risk'
+
+type NextActionRadarModel = {
+  tone: NextActionRadarTone
+  badge: string
+  subtitle: string
+  command: string
+  items: Array<{
+    label: string
+    value: string
+    detail: string
+    tone: NextActionRadarTone
+  }>
+}
+
+function buildNextActionRadar(
+  signal: OpportunityInfo | null,
+  transparency: SignalTransparency,
+  timeframeMinutes: number,
+): NextActionRadarModel {
+  const decisionView = signal?.decisionView ?? null
+  if (!decisionView) {
+    return {
+      tone: 'watch',
+      badge: '等待数据',
+      subtitle: '先等统一决策模型返回，再考虑任何操作。',
+      command: transparency.guardrail,
+      items: [
+        {
+          label: '入场触发',
+          value: '未生成',
+          detail: '当前没有可复核的触发价。',
+          tone: 'watch',
+        },
+        {
+          label: '放弃条件',
+          value: '数据不足',
+          detail: '缺少统一决策模型时，不生成纸面交易动作。',
+          tone: 'block',
+        },
+        {
+          label: '下一次复核',
+          value: `${timeframeMinutes}分钟K收盘`,
+          detail: '等待下一根K线和报价源同步刷新。',
+          tone: 'watch',
+        },
+      ],
+    }
+  }
+
+  const tone = decisionView.actionAllowed
+    ? 'ready'
+    : decisionView.executionState === 'trigger_missed' || decisionView.executionState === 'invalidated' || decisionView.executionState === 'no_trade'
+      ? 'block'
+      : 'watch'
+  const trigger = decisionView.validatedLevels.trigger
+  const stopLoss = decisionView.validatedLevels.stopLoss
+  const riskReward = decisionView.riskRewardRatio
+  const sampleText = `${decisionView.backtestValidity.completeSamples}/${decisionView.backtestValidity.minSamplesRequired}`
+  const riskTone: NextActionRadarTone =
+    riskReward === null || riskReward < 2
+      ? 'block'
+      : riskReward < 2.5
+        ? 'watch'
+        : 'ready'
+  const sampleTone: NextActionRadarTone = decisionView.backtestValidity.metricsEnabled ? 'ready' : 'block'
+  const triggerValue = decisionView.executionState === 'trigger_missed'
+    ? '等回踩/新结构'
+    : trigger.status === 'valid'
+      ? formatMaybePrice(trigger.price)
+      : '暂不触发'
+  const triggerDetail = decisionView.executionState === 'trigger_missed'
+    ? '触发区已经被价格越过，不把右侧反抽当作新买点。'
+    : trigger.reason
+  const abandonValue = stopLoss.status === 'valid'
+    ? formatMaybePrice(stopLoss.price)
+    : decisionView.executionState === 'invalidated'
+      ? '计划失效'
+      : '先不设单'
+  const abandonDetail = stopLoss.status === 'valid'
+    ? stopLoss.reason
+    : decisionView.actionBlockedReason ?? stopLoss.reason
+  const missingValue = decisionView.backtestValidity.metricsEnabled
+    ? '样本达标'
+    : `样本 ${sampleText}`
+  const missingDetail = decisionView.backtestValidity.freezeReason ??
+    decisionView.probabilityDisplay.reason ??
+    '样本、校准或数据源未完全通过前，不显示精确概率。'
+  const reviewText = buildNextReviewText(decisionView.updatedAt, timeframeMinutes)
+
+  return {
+    tone,
+    badge: tone === 'ready' ? '可复核' : tone === 'block' ? '不追/禁冲动' : '等确认',
+    subtitle: '像交易员盯盘便签一样，只保留下一步要看的硬条件。',
+    command: decisionView.singleCommand,
+    items: [
+      {
+        label: '入场触发',
+        value: triggerValue,
+        detail: triggerDetail,
+        tone: trigger.status === 'valid' && decisionView.actionAllowed ? 'ready' : 'watch',
+      },
+      {
+        label: '放弃条件',
+        value: abandonValue,
+        detail: abandonDetail,
+        tone: stopLoss.status === 'valid' ? 'risk' : 'block',
+      },
+      {
+        label: '需要补齐',
+        value: missingValue,
+        detail: missingDetail,
+        tone: sampleTone,
+      },
+      {
+        label: '风险约束',
+        value: riskReward === null ? '赔率未知' : `${riskReward}:1`,
+        detail: riskReward === null
+          ? '没有完整赔率时，不形成可执行买点。'
+          : riskReward >= 2.5
+            ? '赔率满足强观察底线，但仍要通过触发、样本和事件门槛。'
+            : riskReward >= 2
+              ? '仅够观察，不足以放大为强提醒。'
+              : '低于 2:1，优先止盈/降仓或等待新结构。',
+        tone: riskTone,
+      },
+      {
+        label: '下一次复核',
+        value: `${timeframeMinutes}分钟K收盘`,
+        detail: reviewText,
+        tone: 'watch',
+      },
+    ],
+  }
+}
+
+function buildNextReviewText(updatedAt: string, timeframeMinutes: number) {
+  const intervalMinutes = Number.isFinite(timeframeMinutes) && timeframeMinutes > 0
+    ? timeframeMinutes
+    : 5
+  const baseMs = new Date(updatedAt).getTime()
+  if (!Number.isFinite(baseMs)) {
+    return '等待下一根K线收盘后复核，不看盘中噪音追单。'
+  }
+  const intervalMs = intervalMinutes * 60 * 1000
+  const nextMs = Math.ceil((baseMs + 1) / intervalMs) * intervalMs
+  return `约 ${formatDateTime(new Date(nextMs).toISOString())} 后复核；未收盘前只观察，不追价。`
+}
+
+function buildEventMacroBroadcast(signal: OpportunityInfo | null, v4Evidence?: V4EvidenceBundle) {
+  const risk = signal?.eventRisk ?? null
+  const context = signal?.marketContext ?? null
+  const evidence = context?.macroRegimeEvidence ?? null
+  const sourceLedger = v4Evidence?.decisionEvidence?.sourceLedger ?? signal?.decisionView?.sourceLedger ?? null
+  const eventIntelligence = v4Evidence?.eventIntelligence ?? null
+  const eventItem = buildEventBroadcastItem(risk, eventIntelligence)
+  const macroItem = buildMacroBroadcastItem(evidence)
+  const sentimentItem = buildSentimentBroadcastItem(context?.sentiment?.news ?? null)
+  const sourceItem = buildSourceBroadcastItem(sourceLedger)
+  const items = [eventItem, macroItem, sentimentItem, sourceItem]
+    .filter((item): item is EventMacroBroadcastItem => Boolean(item))
+    .slice(0, 4)
+  const hasBlock = items.some((item) => item.tone === 'block') ||
+    (eventIntelligence?.current.level ?? risk?.level) === 'critical' ||
+    (eventIntelligence?.current.level ?? risk?.level) === 'elevated' ||
+    sourceLedger?.strongSignalEligible === false
+  const hasWatch = hasBlock || items.some((item) => item.tone === 'watch') || evidence?.status === 'pressure' || evidence?.status === 'conflicted'
+  const tone: EventMacroBroadcastTone = hasBlock
+    ? 'block'
+    : hasWatch
+      ? 'watch'
+      : evidence?.status === 'supportive'
+        ? 'support'
+        : 'neutral'
+  const command = hasBlock
+    ? '先降级观察：事件/宏观/数据源存在硬约束，禁止把技术形态当成新买点。'
+    : hasWatch
+      ? '等待确认：先看事件窗口和宏观方向是否缓和，再谈触发价。'
+      : evidence?.status === 'supportive'
+        ? '背景偏支持，但仍必须等价格触发、止损和赔率全部成立。'
+        : '宏观未给出强方向，继续以价格结构、数据源和赔率为主。'
+
+  return {
+    tone,
+    badge: tone === 'block' ? '不追/降级' : tone === 'watch' ? '等待确认' : tone === 'support' ? '背景支持' : '中性观察',
+    subtitle: eventIntelligence?.activeItem
+      ? `${eventPhaseLabel(eventIntelligence.activeItem.phase)} · ${sourceUsageShortLabel(eventIntelligence.activeItem.sourceUsage)}`
+      : risk?.activeEvent
+      ? `${eventPhaseLabel(risk.phase)} · ${risk.activeEvent.source === 'configured' ? '配置日历' : '估算窗口'}`
+      : evidence
+        ? `${getMacroRegimeStatusLabel(evidence.status)} · ${getSourceUsageLabel(evidence.sourceUsage)}`
+        : '暂无高影响事件，继续观察数据源和价格结构。',
+    command,
+    items,
+  }
+}
+
+function buildEventBroadcastItem(
+  risk: EconomicEventRisk | null,
+  eventIntelligence?: EventIntelligenceResponse | null,
+): EventMacroBroadcastItem | null {
+  const intelligenceItem = eventIntelligence?.activeItem ?? eventIntelligence?.items?.[0] ?? null
+  if (intelligenceItem) {
+    const item = intelligenceItem
+    const isActive = eventIntelligence?.activeItem?.id === item.id
+    return {
+      id: `event-intel-${item.id}`,
+      title: item.label,
+      meta: `${formatDateTime(item.scheduledAt)} · ${formatEventDistance(item.minutesToEvent)} · ${sourceUsageShortLabel(item.sourceUsage)}`,
+      detail: `${isActive ? eventIntelligence.summary : '未进入核心风控窗口，作为近期宏观观察日历。'} ${item.sourceBoundary}`,
+      badge: item.isProductionEligible ? 'v4生产' : isActive ? 'v4参考' : '近期事件',
+      tone: isActive && (item.riskLevel === 'critical' || item.riskLevel === 'elevated')
+        ? 'block'
+        : isActive && item.riskLevel === 'watch'
+          ? 'watch'
+          : 'neutral',
+    }
+  }
+  if (!risk) {
+    return null
+  }
+  const event = risk.activeEvent ?? risk.upcomingEvents?.[0] ?? null
+  if (!event) {
+    return {
+      id: 'event-none',
+      title: '暂无核心事件窗口',
+      meta: `刷新 ${formatDateTime(risk.updatedAt)}`,
+      detail: risk.summary,
+      badge: '普通时段',
+      tone: risk.level === 'none' ? 'neutral' : 'watch',
+    }
+  }
+  const minutes = event.minutesToEvent
+  const sourceLabel = event.source === 'configured' ? '配置日历' : '估算窗口'
+  const timeText = minutes >= 0
+    ? `${minutes} 分钟后`
+    : `${Math.abs(minutes)} 分钟前`
+  const tone: EventMacroBroadcastTone = risk.level === 'critical' || risk.level === 'elevated'
+    ? 'block'
+    : risk.level === 'watch'
+      ? 'watch'
+      : 'neutral'
+  return {
+    id: `event-${event.id}`,
+    title: event.label,
+    meta: `${formatDateTime(event.scheduledAt)} · ${timeText} · ${sourceLabel}`,
+    detail: risk.warnings[0] ?? risk.summary,
+    badge: event.source === 'estimated' ? '估算' : event.importance,
+    tone,
+  }
+}
+
+function formatEventDistance(minutes: number) {
+  return minutes >= 0
+    ? `${minutes} 分钟后`
+    : `${Math.abs(minutes)} 分钟前`
+}
+
+function buildMacroBroadcastItem(evidence: MacroRegimeEvidence | null): EventMacroBroadcastItem | null {
+  if (!evidence) {
+    return null
+  }
+  const reason = evidence.opposingReasons[0] ?? evidence.supportingReasons[0] ?? evidence.sourceSummary
+  const tone: EventMacroBroadcastTone = evidence.status === 'pressure' || evidence.status === 'conflicted'
+    ? 'watch'
+    : evidence.status === 'supportive'
+      ? 'support'
+      : 'neutral'
+  const sourceLabel = evidence.isProductionEligible
+    ? getSourceUsageLabel(evidence.sourceUsage)
+    : evidence.sourceUsage === 'mirror_learning'
+      ? '离线镜像'
+      : getSourceUsageLabel(evidence.sourceUsage)
+  return {
+    id: 'macro-regime',
+    title: `宏观：${getMacroRegimeStatusLabel(evidence.status)}`,
+    meta: `${sourceLabel} · 置信 ${evidence.confidence}/100 · 影响 ${evidence.scoreImpact}`,
+    detail: `${reason} 实际利率${getRealRateTrendLabel(evidence.realRateTrend)}，通胀${getInflationPhaseLabel(evidence.inflationPhase)}，汇率${getUsdCnyAlignmentLabel(evidence.usdCnyAlignment)}。`,
+    badge: evidence.isProductionEligible ? '可参考' : '非实时',
+    tone,
+  }
+}
+
+function buildSentimentBroadcastItem(sentiment: SentimentFactor | null): EventMacroBroadcastItem | null {
+  if (!sentiment) {
+    return null
+  }
+  const tone: EventMacroBroadcastTone = sentiment.status !== 'live'
+    ? 'neutral'
+    : sentiment.score >= 58
+      ? 'support'
+      : sentiment.score <= 42
+        ? 'watch'
+        : 'neutral'
+  const source = sentiment.sources[0]
+  return {
+    id: 'news-sentiment',
+    title: '新闻情绪估算',
+    meta: `${getMarketStatusLabel(sentiment.status)} · 置信 ${sentiment.confidence}/100 · ${sentiment.updatedAt ? formatDateTime(sentiment.updatedAt) : '时间缺失'}`,
+    detail: source ? `${sentiment.summary} 例：${source}` : sentiment.summary,
+    badge: 'RSS情绪',
+    tone,
+  }
+}
+
+function buildSourceBroadcastItem(ledger: SourceSlaLedger | null): EventMacroBroadcastItem | null {
+  if (!ledger) {
+    return null
+  }
+  const entries = Array.isArray(ledger.entries) ? ledger.entries : []
+  const warning = ledger.warnings[0]
+  return {
+    id: 'source-sla-broadcast',
+    title: '报价源与锚点',
+    meta: `主交易价 ${currencyFormatter.format(ledger.tradePrice)} · ${entries.length} 个源`,
+    detail: warning ?? ledger.summary,
+    badge: ledger.strongSignalEligible ? '源通过' : '源降级',
+    tone: ledger.strongSignalEligible ? 'support' : 'block',
   }
 }
 
@@ -4813,6 +5939,55 @@ function hardGateLabel(status: HardGateStatus) {
     return '复核'
   }
   return '拦截'
+}
+
+function sourceSlaTypeLabel(type: SourceSlaLedger['entries'][number]['sourceType']) {
+  const labels: Record<SourceSlaLedger['entries'][number]['sourceType'], string> = {
+    tradeable_source: '主交易源',
+    reference_source: '校准参考',
+    learning_only_mirror: '离线学习',
+    disabled_source: '生产禁用',
+  }
+  return labels[type]
+}
+
+function sourceSlaHealthLabel(health: SourceSlaLedger['entries'][number]['health']) {
+  const labels: Record<SourceSlaLedger['entries'][number]['health'], string> = {
+    healthy: '健康',
+    watch: '需复核',
+    stale: '延迟',
+    diverged: '偏离',
+    missing: '缺失',
+  }
+  return labels[health]
+}
+
+function signalOutcomeLabel(outcome: SignalJournalEntry['outcome']) {
+  const labels: Record<SignalJournalEntry['outcome'], string> = {
+    pending: '等待结果',
+    tp1_hit: 'TP1先达',
+    stop_loss_hit: '止损先达',
+    no_touch: '未触发',
+    timeout: '超时',
+    invalidated: '已失效',
+  }
+  return labels[outcome]
+}
+
+function failureReasonLabel(reason: SignalJournalEntry['failureReason']) {
+  const labels: Record<SignalJournalEntry['failureReason'], string> = {
+    pending: '持续观察',
+    chasing_risk: '防追价',
+    event_noise: '事件噪声',
+    false_breakout: '假突破',
+    pattern_failed: '形态失败',
+    macro_pressure: '宏观逆风',
+    source_health: '数据源拦截',
+    timeframe_conflict: '周期冲突',
+    poor_risk_reward: '赔率不足',
+    model_disagreement: '模型分歧',
+  }
+  return labels[reason]
 }
 
 function buildChartPrediction(
@@ -5110,9 +6285,10 @@ function buildLineMarkers(
   extremes: ChartExtremes,
   signal: ChartSignal,
   patterns: PatternSignal[],
+  tradeOverlay: TradeOverlayMarker | null,
 ): SeriesMarker<UTCTimestamp>[] {
   const latest = data[data.length - 1]
-  return buildCommonMarkers(latest?.time ?? null, latest?.value ?? null, extremes, signal, patterns)
+  return buildCommonMarkers(latest?.time ?? null, latest?.value ?? null, extremes, signal, patterns, tradeOverlay)
 }
 
 function buildCandleMarkers(
@@ -5120,9 +6296,10 @@ function buildCandleMarkers(
   extremes: ChartExtremes,
   signal: ChartSignal,
   patterns: PatternSignal[],
+  tradeOverlay: TradeOverlayMarker | null,
 ): SeriesMarker<UTCTimestamp>[] {
   const latest = data[data.length - 1]
-  return buildCommonMarkers(latest?.time ?? null, latest?.close ?? null, extremes, signal, patterns)
+  return buildCommonMarkers(latest?.time ?? null, latest?.close ?? null, extremes, signal, patterns, tradeOverlay)
 }
 
 function buildCommonMarkers(
@@ -5131,6 +6308,7 @@ function buildCommonMarkers(
   extremes: ChartExtremes,
   signal: ChartSignal,
   patterns: PatternSignal[],
+  tradeOverlay: TradeOverlayMarker | null,
 ): SeriesMarker<UTCTimestamp>[] {
   const markers: SeriesMarker<UTCTimestamp>[] = []
 
@@ -5173,6 +6351,20 @@ function buildCommonMarkers(
     })
   }
 
+  if (tradeOverlay) {
+    const isBuy = tradeOverlay.side === 'buy'
+    markers.push({
+      id: tradeOverlay.id,
+      time: tradeOverlay.time,
+      position: isBuy ? 'atPriceBottom' : 'atPriceTop',
+      price: tradeOverlay.value,
+      color: isBuy ? '#16a34a' : '#dc2626',
+      shape: 'circle',
+      text: '',
+      size: 1.65,
+    })
+  }
+
   for (const pattern of patterns.slice(0, 3)) {
     const time = toUtcTimestamp(pattern.detectedAt)
     if (time === null) {
@@ -5191,6 +6383,211 @@ function buildCommonMarkers(
   }
 
   return markers.sort((left, right) => Number(left.time) - Number(right.time))
+}
+
+function buildLineTradeOverlayMarker(
+  data: LineDatum[],
+  opportunity: OpportunityInfo | null,
+): TradeOverlayMarker | null {
+  const decision = buildTradeDecisionMarker(opportunity)
+  if (!decision) {
+    return null
+  }
+  const point = findLineTradeMarkerPoint(data, decision)
+  return point ? { ...decision, time: point.time, value: point.value } : null
+}
+
+function buildCandleTradeOverlayMarker(
+  data: CandleDatum[],
+  opportunity: OpportunityInfo | null,
+): TradeOverlayMarker | null {
+  const decision = buildTradeDecisionMarker(opportunity)
+  if (!decision) {
+    return null
+  }
+  const point = findCandleTradeMarkerPoint(data, decision)
+  return point ? { ...decision, time: point.time, value: point.value } : null
+}
+
+function buildTradeDecisionMarker(opportunity: OpportunityInfo | null): TradeDecisionMarker | null {
+  const decisionView = opportunity?.decisionView ?? null
+  const tradePlan = opportunity?.tradePlan ?? null
+  const finalDecision = opportunity?.finalDecision ?? null
+
+  if (
+    decisionView?.executionState === 'reduce_position' ||
+    tradePlan?.action === 'take_profit_or_reduce' ||
+    finalDecision?.action === 'reduce'
+  ) {
+    return {
+      id: 'trade-decision-sell',
+      side: 'sell',
+      label: 'SELL',
+      variant: 'exit',
+      targetPrice: firstFinitePrice(decisionView?.takeProfit1, tradePlan?.takeProfit1, tradePlan?.triggerPrice),
+      reason: decisionView?.singleCommand ?? tradePlan?.actionLabel ?? finalDecision?.actionLabel ?? '止盈/降仓',
+    }
+  }
+
+  if (!decisionView) {
+    return null
+  }
+
+  if (
+    decisionView.executionState === 'trigger_missed' ||
+    decisionView.executionState === 'invalidated' ||
+    decisionView.action === 'avoid' ||
+    decisionView.displayGrade === 'blocked' ||
+    !decisionView.actionAllowed
+  ) {
+    return {
+      id: 'trade-decision-risk-sell',
+      side: 'sell',
+      label: 'SELL',
+      variant: 'risk',
+      targetPrice: firstFinitePrice(decisionView.takeProfit1, tradePlan?.takeProfit1, decisionView.triggerPrice, tradePlan?.triggerPrice),
+      reason: decisionView.singleCommand || decisionView.blockerSummary || '风险回避/不追价',
+    }
+  }
+
+  const hasEnoughDecisionEvidence =
+    decisionView.backtestValidity.metricsEnabled ||
+    decisionView.calibrationStatus.sampleSize >= decisionView.backtestValidity.minSamplesRequired ||
+    decisionView.calibrationStatus.sampleStatus === 'usable' ||
+    decisionView.calibrationStatus.sampleStatus === 'robust'
+  const triggerArmed = decisionView.executionState === 'trigger_armed' && decisionView.actionAllowed
+  const canMarkBuy = (decisionView.canAct || triggerArmed) &&
+    hasEnoughDecisionEvidence
+
+  if (!canMarkBuy) {
+    return null
+  }
+
+  return {
+    id: 'trade-decision-buy',
+    side: 'buy',
+    label: 'BUY',
+    variant: 'entry',
+    targetPrice: firstFinitePrice(decisionView.triggerPrice, tradePlan?.triggerPrice),
+    reason: decisionView.singleCommand,
+  }
+}
+
+function findLineTradeMarkerPoint(
+  data: LineDatum[],
+  marker: TradeDecisionMarker,
+): ChartExtremePoint | null {
+  const latest = data[data.length - 1]
+  if (!latest) {
+    return null
+  }
+  if (marker.variant === 'risk') {
+    return findRecentLineResistancePoint(data)
+  }
+  const targetPrice = marker.targetPrice
+  if (targetPrice === null) {
+    return { time: latest.time, value: latest.value }
+  }
+
+  let nearest = latest
+  let nearestDistance = Math.abs(latest.value - targetPrice)
+  for (const point of data) {
+    const distance = Math.abs(point.value - targetPrice)
+    if (distance < nearestDistance) {
+      nearest = point
+      nearestDistance = distance
+    }
+  }
+  return { time: nearest.time, value: nearest.value }
+}
+
+function findCandleTradeMarkerPoint(
+  data: CandleDatum[],
+  marker: TradeDecisionMarker,
+): ChartExtremePoint | null {
+  const latest = data[data.length - 1]
+  if (!latest) {
+    return null
+  }
+  if (marker.variant === 'risk') {
+    return findRecentCandleResistancePoint(data)
+  }
+  const targetPrice = marker.targetPrice
+  if (targetPrice === null) {
+    return { time: latest.time, value: latest.close }
+  }
+
+  let nearest = latest
+  let nearestDistance = candleDistanceToPrice(latest, targetPrice)
+  for (const candle of data) {
+    const distance = candleDistanceToPrice(candle, targetPrice)
+    if (distance < nearestDistance) {
+      nearest = candle
+      nearestDistance = distance
+    }
+  }
+
+  return {
+    time: nearest.time,
+    value: clamp(targetPrice, nearest.low, nearest.high),
+  }
+}
+
+function findRecentLineResistancePoint(data: LineDatum[]) {
+  const window = data.slice(-Math.min(48, Math.max(12, data.length)))
+  if (window.length < 1) {
+    return null
+  }
+  let resistance = window[0]
+  for (const point of window) {
+    if (point.value >= resistance.value) {
+      resistance = point
+    }
+  }
+  const latest = data[data.length - 1]
+  if (latest && latest.value > resistance.value * 0.998) {
+    return { time: latest.time, value: latest.value }
+  }
+  return { time: resistance.time, value: resistance.value }
+}
+
+function findRecentCandleResistancePoint(data: CandleDatum[]) {
+  const window = data.slice(-Math.min(48, Math.max(12, data.length)))
+  if (window.length < 1) {
+    return null
+  }
+  let resistance = window[0]
+  for (const candle of window) {
+    if (candle.high >= resistance.high) {
+      resistance = candle
+    }
+  }
+  const latest = data[data.length - 1]
+  if (latest && latest.close > resistance.high * 0.998) {
+    return { time: latest.time, value: latest.close }
+  }
+  return { time: resistance.time, value: resistance.high }
+}
+
+function candleDistanceToPrice(candle: CandleDatum, targetPrice: number) {
+  if (targetPrice >= candle.low && targetPrice <= candle.high) {
+    return 0
+  }
+  return Math.min(
+    Math.abs(candle.open - targetPrice),
+    Math.abs(candle.high - targetPrice),
+    Math.abs(candle.low - targetPrice),
+    Math.abs(candle.close - targetPrice),
+  )
+}
+
+function firstFinitePrice(...values: Array<number | null | undefined>) {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return value
+    }
+  }
+  return null
 }
 
 function addExtremePriceLines(
@@ -6351,10 +7748,63 @@ function normalizeFinalDecision(value: FinalDecision | null | undefined) {
 }
 
 function normalizeDecisionView(value: DecisionViewModel | null | undefined) {
-  if (!value || value.version !== 'decision-view-v2' || !value.probabilityDisplay) {
+  if (
+    !value ||
+    !['decision-view-v4', 'decision-view-v3', 'decision-view-v2'].includes(value.version) ||
+    !value.probabilityDisplay
+  ) {
     return null
   }
-  return value
+  const raw = value as Partial<DecisionViewModel>
+  const fallbackLevelValidation = buildFallbackLevelValidation()
+  const levelValidation = raw.levelValidation ?? fallbackLevelValidation
+  const sourceHealth = raw.sourceHealth ?? {
+    tradeSourceStatus: 'offline',
+    referenceSourceStatus: 'missing',
+    macroMirrorStatus: 'unknown',
+    providerProbeStatus: 'missing',
+    canUseForStrongSignal: false,
+    warnings: ['决策视图缺少数据源健康详情，按不可强提醒处理。'],
+  } satisfies DecisionViewModel['sourceHealth']
+  return {
+    ...value,
+    version: 'decision-view-v3',
+    displayGuards: Array.isArray(raw.displayGuards) ? raw.displayGuards : [],
+    levelValidation,
+    validatedLevels: raw.validatedLevels ?? levelValidation,
+    sourceHealth: {
+      ...sourceHealth,
+      warnings: Array.isArray(sourceHealth.warnings) ? sourceHealth.warnings : [],
+    },
+    probabilityPolicy: value.probabilityPolicy ?? {
+      status: value.probabilityDisplay.mode === 'calibrated' ? 'show_calibrated' : 'hide_precise',
+      canShowPrecise: value.probabilityDisplay.mode === 'calibrated' && value.probabilityDisplay.value !== null,
+      minSamplesRequired: 30,
+      reason: value.probabilityDisplay.reason,
+    },
+    sourceLedger: value.sourceLedger ?? null,
+    decisionEvidence: value.decisionEvidence ?? null,
+    eventIntelligence: value.eventIntelligence ?? null,
+    modelRegistry: value.modelRegistry ?? null,
+    modelScorecard: value.modelScorecard ?? null,
+    signalJournal: value.signalJournal ?? null,
+    journalPreview: value.journalPreview ?? null,
+  } satisfies DecisionViewModel
+}
+
+function buildFallbackLevelValidation(): DecisionViewModel['levelValidation'] {
+  const item: LevelValidationItem = {
+    price: null,
+    status: 'missing',
+    reason: '后端未返回该关键价校验，按不可执行处理。',
+  }
+  return {
+    support: item,
+    resistance: item,
+    trigger: item,
+    stopLoss: item,
+    takeProfit1: item,
+  }
 }
 
 function normalizeCanonicalForecast(value: CanonicalForecast | null | undefined) {

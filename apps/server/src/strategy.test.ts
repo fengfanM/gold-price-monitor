@@ -228,7 +228,7 @@ describe('opportunity strategy engine', () => {
       },
     })
 
-    assert.equal(signal.decisionView.version, 'decision-view-v2')
+    assert.equal(signal.decisionView.version, 'decision-view-v3')
     assert.equal(signal.decisionView.executionState, 'trigger_missed')
     assert.equal(signal.decisionView.actionAllowed, false)
     assert.equal(signal.decisionView.singleCommand.includes('不追'), true)

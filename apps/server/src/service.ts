@@ -1,13 +1,24 @@
 import type {
   AlertInfo,
   DataAnomaly,
+  DecisionEvidencePacket,
+  EventIntelligenceResponse,
   HistoryApiResponse,
   HistoryPoint,
   MarketContext,
   MarketReference,
+  MarketReferenceQuote,
   BacktestMonitor,
+  ModelProviderScorecardEntry,
+  ModelRegistryEntry,
+  ModelProviderScorecard,
+  OpportunitySignal,
   QuoteApiResponse,
   QuoteSample,
+  SignalJournalEntry,
+  SignalJournalEvidence,
+  SignalJournalRecord,
+  SourceSlaLedger,
   SourceChannelStatus,
   SourceStatus,
 } from './types.js'
@@ -31,15 +42,18 @@ import {
   loadHistory,
   loadMarketContext,
   loadBacktestSnapshots,
+  loadSignalJournalRecords,
   mergeBacktestSnapshots,
-  saveBacktestSnapshot,
+  mergeSignalJournalRecords,
   saveBacktestSnapshots,
   saveFactors,
   saveHistory,
   saveMarketContext,
+  saveSignalJournalRecord,
 } from './storage.js'
 import { buildOpportunitySignal } from './strategy.js'
-import { buildQuoteSourceLedger } from './source-ledger.js'
+import { buildEconomicEventRisk, buildEventIntelligenceResponse } from './event-risk.js'
+import { buildQuoteSourceLedger, buildSourceSlaLedger } from './source-ledger.js'
 
 const ALERT_DROP_THRESHOLD = Number(process.env.ALERT_DROP_THRESHOLD ?? '0.01')
 const ALERT_DRAWDOWN_THRESHOLD = Number(
@@ -57,6 +71,12 @@ const ENABLE_HISTORY_BACKTEST_SEED =
   process.env.ENABLE_HISTORY_BACKTEST_SEED === undefined
     ? true
     : process.env.ENABLE_HISTORY_BACKTEST_SEED === '1'
+const MODEL_REGISTRY_MIN_PROMOTION_SAMPLES = Number(
+  process.env.MODEL_REGISTRY_MIN_PROMOTION_SAMPLES ?? '30',
+)
+const MODEL_REGISTRY_MAX_PROMOTION_BRIER = Number(
+  process.env.MODEL_REGISTRY_MAX_PROMOTION_BRIER ?? '0.24',
+)
 
 export class QuoteService {
   private history: HistoryPoint[] = []
@@ -69,18 +89,28 @@ export class QuoteService {
   private latestMarketContext: MarketContext | null = null
   private latestMarketContextBuiltAt = 0
   private latestExternalModelAdvisor: Awaited<ReturnType<typeof fetchExternalModelAdvisor>> | null = null
+  private latestBacktestMonitor: BacktestMonitor | null = null
   private latestBacktestSeedAt = 0
+  private signalJournalRecords: SignalJournalRecord[] = []
 
   async init() {
-    const [history, marketContext] = await Promise.all([
+    const [history, marketContext, backtestSnapshots, signalJournalRecords] = await Promise.all([
       loadHistory(),
       loadMarketContext(),
+      loadBacktestSnapshots(),
+      loadSignalJournalRecords(),
     ])
     this.history = pruneHistory(history)
     this.latestMarketContext = marketContext
     this.latestMarketContextBuiltAt = marketContext
       ? new Date(marketContext.updatedAt).getTime()
       : 0
+    this.latestQuote = buildCachedQuoteFromHistory(this.history)
+    this.latestBacktestMonitor = buildBacktestMonitor(
+      backtestSnapshots,
+      selectBacktestHorizonMinutes(backtestSnapshots),
+    )
+    this.signalJournalRecords = signalJournalRecords
     await this.seedBacktestSnapshotsFromHistory()
     try {
       await this.refresh()
@@ -122,6 +152,7 @@ export class QuoteService {
     const alert = buildAlert(stats)
     const sourceStatus = this.getSourceStatus()
     const sourceLedger = buildQuoteSourceLedger(this.latestQuote, sourceStatus)
+    const sourceSlaLedger = buildSourceSlaLedger(this.latestQuote, sourceStatus, sourceLedger)
     const quality = buildDataQuality(
       this.latestQuote,
       stats,
@@ -139,7 +170,22 @@ export class QuoteService {
       marketContext,
       patternSignals,
       this.latestExternalModelAdvisor,
+      this.latestBacktestMonitor,
     )
+    const sourceGuardedOpportunity = applySourceSlaGuard(opportunity, sourceSlaLedger)
+    const journalPreview = buildSignalJournalEntry(
+      this.latestQuote,
+      sourceGuardedOpportunity,
+      sourceSlaLedger,
+    )
+    const enhancedOpportunity = {
+      ...sourceGuardedOpportunity,
+      decisionView: {
+        ...sourceGuardedOpportunity.decisionView,
+        sourceLedger: sourceSlaLedger,
+        journalPreview,
+      },
+    }
 
     return {
       productName: this.latestQuote.productName,
@@ -157,6 +203,7 @@ export class QuoteService {
       sourceKind: this.latestQuote.sourceKind,
       sourceStatus,
       sourceLedger,
+      sourceSlaLedger,
       dayRange: {
         low: this.latestQuote.dayLow,
         high: this.latestQuote.dayHigh,
@@ -166,7 +213,7 @@ export class QuoteService {
       alert,
       quality,
       marketContext,
-      opportunity,
+      opportunity: enhancedOpportunity,
       patternSignals,
     }
   }
@@ -208,7 +255,140 @@ export class QuoteService {
   async getBacktestMonitor(): Promise<BacktestMonitor> {
     await this.seedBacktestSnapshotsFromHistory()
     const snapshots = await loadBacktestSnapshots()
-    return buildBacktestMonitor(snapshots, selectBacktestHorizonMinutes(snapshots))
+    this.latestBacktestMonitor = buildBacktestMonitor(snapshots, selectBacktestHorizonMinutes(snapshots))
+    return this.latestBacktestMonitor
+  }
+
+  getSourceLedgerResponse(): SourceSlaLedger {
+    if (!this.latestQuote) {
+      throw new Error('报价尚未初始化')
+    }
+    const quoteLedger = buildQuoteSourceLedger(this.latestQuote, this.getSourceStatus())
+    return buildSourceSlaLedger(this.latestQuote, this.getSourceStatus(), quoteLedger)
+  }
+
+  getEventsResponse() {
+    const timestamp = this.latestQuote?.fetchedAt ?? new Date().toISOString()
+    const risk = buildEconomicEventRisk(timestamp)
+    return {
+      version: 'event-phase-state-v1',
+      generatedAt: new Date().toISOString(),
+      current: risk,
+      upcomingEvents: risk.upcomingEvents,
+      summary: risk.summary,
+      usageBoundary: '事件日历用于风控和等待确认；事件第一波默认不放大强提醒。',
+    }
+  }
+
+  getEventIntelligenceResponse(): EventIntelligenceResponse {
+    const timestamp = this.latestQuote?.fetchedAt ?? new Date().toISOString()
+    return buildEventIntelligenceResponse(timestamp)
+  }
+
+  getDecisionEvidenceResponse(): DecisionEvidencePacket {
+    const quote = this.getQuoteResponse()
+    const sourceLedger = quote.sourceSlaLedger
+    const modelScorecard = buildModelProviderScorecard(quote.opportunity, this.latestBacktestMonitor)
+    const eventIntelligence = buildEventIntelligenceResponse(quote.fetchedAt)
+    const eventStatus = quote.opportunity.eventRisk.level === 'critical'
+      ? 'blocking'
+      : quote.opportunity.eventRisk.level === 'elevated'
+        ? 'opposing'
+        : quote.opportunity.eventRisk.level === 'watch'
+          ? 'informational'
+          : 'supporting'
+
+    return {
+      version: 'decision-evidence-v4',
+      generatedAt: new Date().toISOString(),
+      quoteTimestamp: quote.fetchedAt,
+      symbol: quote.symbol,
+      price: quote.price,
+      singleCommand: quote.opportunity.decisionView.singleCommand,
+      actionAllowed: quote.opportunity.decisionView.actionAllowed,
+      executionState: quote.opportunity.decisionView.executionState,
+      decision: {
+        action: quote.opportunity.decisionView.action,
+        executionState: quote.opportunity.decisionView.executionState,
+        command: quote.opportunity.decisionView.singleCommand,
+        score: quote.opportunity.score,
+        level: quote.opportunity.level,
+        actionAllowed: quote.opportunity.decisionView.actionAllowed,
+        blockerSummary: quote.opportunity.decisionView.blockerSummary,
+      },
+      evidence: [
+        {
+          id: 'event-intelligence',
+          label: '事件智能',
+          status: eventStatus,
+          summary: eventIntelligence.summary,
+          sourceUsage: eventIntelligence.activeItem?.sourceUsage ?? 'estimation_only',
+        },
+        {
+          id: 'source-sla',
+          label: '数据源 SLA',
+          status: sourceLedger.strongSignalEligible ? 'supporting' : 'blocking',
+          summary: sourceLedger.summary,
+          sourceUsage: 'production_realtime',
+        },
+        {
+          id: 'model-scorecard',
+          label: '模型与规则证据',
+          status: quote.opportunity.decisionView.probabilityPolicy.canShowPrecise ? 'supporting' : 'informational',
+          summary: modelScorecard.summary,
+          sourceUsage: quote.opportunity.decisionView.probabilityPolicy.canShowPrecise ? 'production_realtime' : 'shadow_only',
+        },
+      ],
+      eventIntelligence,
+      sourceLedger,
+      modelScorecard,
+      boundary: {
+        productionDecisionInputs: [
+          'ICBC tradable quote',
+          'configured economic calendar',
+          'source SLA gates',
+          'validated strategy/risk levels',
+        ],
+        referenceOnlyInputs: [
+          'SGE AU9999 and domestic bank references',
+          'estimated economic-event windows',
+        ],
+        learningOnlyInputs: [
+          'RSS/news watch signals',
+          'macro mirror learning factors',
+          'shadow model scorecards before backtest qualification',
+        ],
+      },
+      summary: `${quote.opportunity.decisionView.singleCommand} 证据包已区分生产、参考与学习边界。`,
+    }
+  }
+
+  getJournalResponse() {
+    const quote = this.getQuoteResponse()
+    const preview = quote.opportunity.decisionView.journalPreview
+    const entries = preview
+      ? mergeSignalJournalRecords(this.signalJournalRecords, [preview])
+      : this.signalJournalRecords
+    return {
+      version: 'signal-journal-v4',
+      generatedAt: new Date().toISOString(),
+      entries,
+      preview,
+      backtestReference: this.latestBacktestMonitor
+        ? {
+            sampleSize: this.latestBacktestMonitor.sampleSize,
+            completeSamples: this.latestBacktestMonitor.completeEvaluatedSamples,
+            metricsFrozen: this.latestBacktestMonitor.metricsFrozen,
+            failureAttribution: this.latestBacktestMonitor.failureAttribution,
+          }
+        : null,
+      summary: '实时信号已按 v4 可持久化记录格式沉淀；结果字段先以 pending 写入，后续由回测切片补全。',
+    }
+  }
+
+  getModelScorecardResponse(): ModelProviderScorecard {
+    const quote = this.getQuoteResponse()
+    return buildModelProviderScorecard(quote.opportunity, this.latestBacktestMonitor)
   }
 
   private async performRefresh() {
@@ -316,6 +496,10 @@ export class QuoteService {
       stats,
     })
     const priorBacktestSnapshots = await loadBacktestSnapshots()
+    this.latestBacktestMonitor = buildBacktestMonitor(
+      priorBacktestSnapshots,
+      selectBacktestHorizonMinutes(priorBacktestSnapshots),
+    )
     const sourceStatus = this.getSourceStatus()
     const provisionalSnapshot = {
       updatedAt: new Date().toISOString(),
@@ -364,7 +548,57 @@ export class QuoteService {
       this.latestMarketContext,
       patternSignals,
       this.latestExternalModelAdvisor,
+      this.latestBacktestMonitor,
     )
+    const quoteLedger = buildQuoteSourceLedger(quote, sourceStatus)
+    const sourceLedger = buildSourceSlaLedger(quote, sourceStatus, quoteLedger)
+    const journalRecord = buildSignalJournalEntry(
+      quote,
+      applySourceSlaGuard(opportunity, sourceLedger),
+      sourceLedger,
+    )
+    const currentBacktestSnapshots = mergeBacktestSnapshots(priorBacktestSnapshots, [{
+      updatedAt: new Date().toISOString(),
+      quoteTimestamp: quote.fetchedAt,
+      price: quote.price,
+      sampleOrigin: 'live',
+      signalScore: opportunity.score,
+      signalLevel: opportunity.level,
+      backtest: this.latestMarketContext.backtest,
+      valuation: opportunity.valuation,
+      primaryPatternKind: opportunity.patternSignals[0]?.kind ?? null,
+      confluenceScore: opportunity.confluence.score,
+      confluenceConflictLevel: opportunity.confluence.conflictLevel,
+      macroRegime: marketRegimeFromScore(this.latestMarketContext.factorScore),
+      macroRegimeEvidenceStatus: this.latestMarketContext.macroRegimeEvidence?.status ?? null,
+      inflationPhase: this.latestMarketContext.macroRegimeEvidence?.inflationPhase ?? null,
+      realRateTrend: this.latestMarketContext.macroRegimeEvidence?.realRateTrend ?? null,
+      usdCnyAlignment: this.latestMarketContext.macroRegimeEvidence?.usdCnyAlignment ?? null,
+      cmeBreakoutQuality: this.latestMarketContext.macroRegimeEvidence?.cmeBreakoutQuality ?? null,
+      modelProbability: opportunity.probabilityModel.primaryPrediction.probability,
+      modelConfidence: opportunity.probabilityModel.primaryPrediction.confidence,
+      externalModelStatus: opportunity.externalModelAdvisor?.status ?? null,
+      externalModelProvider: opportunity.externalModelAdvisor?.provider ?? null,
+      externalModelName: opportunity.externalModelAdvisor?.modelName ?? null,
+      externalModelHorizonMinutes: opportunity.externalModelAdvisor?.horizonMinutes ?? null,
+      externalModelUpProbability: opportunity.externalModelAdvisor?.upProbability ?? null,
+      externalModelConfidence: opportunity.externalModelAdvisor?.confidence ?? null,
+      externalModelExpectedReturnPercent: opportunity.externalModelAdvisor?.expectedReturnPercent ?? null,
+      externalModelCandidates: opportunity.externalModelAdvisor
+        ? [
+            opportunity.externalModelAdvisor,
+            ...(opportunity.externalModelAdvisor.competitors ?? []),
+          ]
+        : [],
+      eventRiskLevel: opportunity.eventRisk.level,
+      psychologyLevel: opportunity.psychology.level,
+      sourceHealth: sourceHealthFromStatus(this.getSourceStatus()),
+    }])
+    this.latestBacktestMonitor = buildBacktestMonitor(
+      currentBacktestSnapshots,
+      selectBacktestHorizonMinutes(currentBacktestSnapshots),
+    )
+    this.signalJournalRecords = mergeSignalJournalRecords(this.signalJournalRecords, [journalRecord])
     await Promise.all([
       saveHistory(this.history),
       saveMarketContext(this.latestMarketContext),
@@ -374,43 +608,8 @@ export class QuoteService {
         this.latestMarketContext.factors.usdCny,
         ...this.latestMarketContext.macroFactors,
       ]),
-      saveBacktestSnapshot({
-        updatedAt: new Date().toISOString(),
-        quoteTimestamp: quote.fetchedAt,
-        price: quote.price,
-        sampleOrigin: 'live',
-        signalScore: opportunity.score,
-        signalLevel: opportunity.level,
-        backtest: this.latestMarketContext.backtest,
-        valuation: opportunity.valuation,
-        primaryPatternKind: opportunity.patternSignals[0]?.kind ?? null,
-        confluenceScore: opportunity.confluence.score,
-        confluenceConflictLevel: opportunity.confluence.conflictLevel,
-        macroRegime: marketRegimeFromScore(this.latestMarketContext.factorScore),
-        macroRegimeEvidenceStatus: this.latestMarketContext.macroRegimeEvidence?.status ?? null,
-        inflationPhase: this.latestMarketContext.macroRegimeEvidence?.inflationPhase ?? null,
-        realRateTrend: this.latestMarketContext.macroRegimeEvidence?.realRateTrend ?? null,
-        usdCnyAlignment: this.latestMarketContext.macroRegimeEvidence?.usdCnyAlignment ?? null,
-        cmeBreakoutQuality: this.latestMarketContext.macroRegimeEvidence?.cmeBreakoutQuality ?? null,
-        modelProbability: opportunity.probabilityModel.primaryPrediction.probability,
-        modelConfidence: opportunity.probabilityModel.primaryPrediction.confidence,
-        externalModelStatus: opportunity.externalModelAdvisor?.status ?? null,
-        externalModelProvider: opportunity.externalModelAdvisor?.provider ?? null,
-        externalModelName: opportunity.externalModelAdvisor?.modelName ?? null,
-        externalModelHorizonMinutes: opportunity.externalModelAdvisor?.horizonMinutes ?? null,
-        externalModelUpProbability: opportunity.externalModelAdvisor?.upProbability ?? null,
-        externalModelConfidence: opportunity.externalModelAdvisor?.confidence ?? null,
-        externalModelExpectedReturnPercent: opportunity.externalModelAdvisor?.expectedReturnPercent ?? null,
-        externalModelCandidates: opportunity.externalModelAdvisor
-          ? [
-              opportunity.externalModelAdvisor,
-              ...(opportunity.externalModelAdvisor.competitors ?? []),
-            ]
-          : [],
-        eventRiskLevel: opportunity.eventRisk.level,
-        psychologyLevel: opportunity.psychology.level,
-        sourceHealth: sourceHealthFromStatus(this.getSourceStatus()),
-      }),
+      saveBacktestSnapshots(currentBacktestSnapshots),
+      saveSignalJournalRecord(journalRecord),
     ])
   }
 
@@ -458,6 +657,7 @@ export class QuoteService {
     const merged = mergeBacktestSnapshots(existing, historicalSnapshots)
     if (merged.length > existing.length) {
       await saveBacktestSnapshots(merged)
+      this.latestBacktestMonitor = buildBacktestMonitor(merged, selectBacktestHorizonMinutes(merged))
     }
   }
 
@@ -494,6 +694,307 @@ export class QuoteService {
       fallback: { ...this.fallbackStatus },
     }
   }
+}
+
+function applySourceSlaGuard(
+  opportunity: OpportunitySignal,
+  sourceLedger: SourceSlaLedger,
+): OpportunitySignal {
+  if (sourceLedger.strongSignalEligible) {
+    return opportunity
+  }
+
+  const hasHardSourceProblem = sourceLedger.entries.some((entry) => {
+    return entry.sourceType === 'tradeable_source' && entry.health !== 'healthy'
+  }) || sourceLedger.entries.some((entry) => {
+    return entry.sourceType === 'reference_source' && (entry.health === 'diverged' || entry.health === 'stale')
+  })
+  const gateStatus = hasHardSourceProblem ? 'block' as const : 'watch' as const
+  const gateReason = sourceLedger.warnings[0] ?? sourceLedger.summary
+  const finalDecision = {
+    ...opportunity.finalDecision,
+    action: hasHardSourceProblem ? 'avoid' as const : opportunity.finalDecision.action === 'confirm_then_enter' ? 'watch' as const : opportunity.finalDecision.action,
+    signalGrade: hasHardSourceProblem ? 'blocked' as const : opportunity.finalDecision.signalGrade,
+    strongReminderAllowed: false,
+    blockedReasons: hasHardSourceProblem
+      ? [...opportunity.finalDecision.blockedReasons, `数据源 SLA：${gateReason}`]
+      : opportunity.finalDecision.blockedReasons,
+    downgradeReasons: hasHardSourceProblem
+      ? opportunity.finalDecision.downgradeReasons
+      : [...opportunity.finalDecision.downgradeReasons, `数据源 SLA：${gateReason}`],
+    hardGates: [
+      ...opportunity.finalDecision.hardGates.filter((gate) => gate.id !== 'source-sla'),
+      {
+        id: 'source-sla',
+        label: '数据源 SLA',
+        status: gateStatus,
+        reason: gateReason,
+      },
+    ],
+    userAdvice: hasHardSourceProblem
+      ? '数据源 SLA 未通过，只观察不交易。'
+      : opportunity.finalDecision.userAdvice,
+    beginnerAdvice: hasHardSourceProblem
+      ? '现在先别急着买，报价源或参考锚还没通过硬校验。'
+      : opportunity.finalDecision.beginnerAdvice,
+  }
+  const actionBlockedReason = `数据源 SLA：${gateReason}`
+  const decisionView = {
+    ...opportunity.decisionView,
+    action: finalDecision.action,
+    displayGrade: finalDecision.signalGrade,
+    canAct: false,
+    actionAllowed: false,
+    actionBlockedReason,
+    singleCommand: hasHardSourceProblem
+      ? `禁止开新仓；${gateReason}`
+      : `只观察，不开新仓；${gateReason}`,
+    displayGuards: [
+      ...opportunity.decisionView.displayGuards,
+      actionBlockedReason,
+    ],
+    sourceLedger,
+    blockerSummary: actionBlockedReason,
+  }
+
+  return {
+    ...opportunity,
+    level: hasHardSourceProblem ? 'none' : opportunity.level === 'strong' ? 'watch' : opportunity.level,
+    triggered: hasHardSourceProblem ? false : opportunity.triggered && opportunity.level !== 'strong',
+    finalDecision,
+    decisionView,
+  }
+}
+
+function buildSignalJournalEntry(
+  quote: QuoteSample,
+  opportunity: OpportunitySignal,
+  sourceLedger: SourceSlaLedger,
+): SignalJournalRecord {
+  const decisionView = opportunity.decisionView
+  const failureReason = !sourceLedger.strongSignalEligible
+    ? 'source_health'
+    : opportunity.eventRisk.level === 'critical' || opportunity.eventRisk.phase === 'post_first_wave'
+      ? 'event_noise'
+      : (opportunity.tradePlan.riskRewardRatio ?? 0) < 2
+        ? 'poor_risk_reward'
+        : opportunity.confluence.conflictLevel === 'severe'
+          ? 'timeframe_conflict'
+          : decisionView.executionState === 'trigger_missed'
+            ? 'chasing_risk'
+            : 'pending'
+
+  const entry: SignalJournalEntry = {
+    id: `${quote.symbol}:${quote.fetchedAt}`,
+    generatedAt: new Date().toISOString(),
+    quoteTimestamp: quote.fetchedAt,
+    price: quote.price,
+    action: decisionView.action,
+    executionState: decisionView.executionState,
+    score: opportunity.score,
+    command: decisionView.singleCommand,
+    pattern: opportunity.patternSignals[0]?.kind ?? null,
+    eventPhase: opportunity.eventRisk.phase,
+    sourceHealth: decisionView.sourceHealth.tradeSourceStatus,
+    riskRewardRatio: opportunity.tradePlan.riskRewardRatio,
+    probabilityShown: decisionView.probabilityDisplay.mode === 'calibrated' &&
+      decisionView.probabilityDisplay.value !== null,
+    outcome: decisionView.executionState === 'invalidated' ? 'invalidated' : 'pending',
+    failureReason,
+    bucketKey: [
+      opportunity.patternSignals[0]?.kind ?? 'no_pattern',
+      opportunity.confluence.conflictLevel,
+      opportunity.eventRisk.level,
+      sourceLedger.strongSignalEligible ? 'source_ok' : 'source_block',
+    ].join(':'),
+    notes: [
+      decisionView.blockerSummary,
+      decisionView.probabilityPolicy.reason,
+      ...sourceLedger.warnings.slice(0, 2),
+    ],
+  }
+  return buildSignalJournalRecord(entry, {
+    probabilityPolicyReason: decisionView.probabilityPolicy.reason,
+    displayGuards: decisionView.displayGuards,
+    sourceWarnings: sourceLedger.warnings,
+  })
+}
+
+export function buildSignalJournalRecord(
+  entry: SignalJournalEntry,
+  evidence: SignalJournalEvidence,
+  persistedAt = new Date().toISOString(),
+): SignalJournalRecord {
+  return {
+    ...entry,
+    recordVersion: 'signal-journal-record-v4',
+    persistedAt,
+    evidence: {
+      probabilityPolicyReason: evidence.probabilityPolicyReason,
+      displayGuards: evidence.displayGuards.slice(0, 8),
+      sourceWarnings: evidence.sourceWarnings.slice(0, 8),
+    },
+    result: {
+      outcome: entry.outcome,
+      failureReason: entry.failureReason,
+      evaluatedAt: null,
+      returnPercent: null,
+      notes: entry.notes,
+    },
+  }
+}
+
+function buildModelProviderScorecard(
+  opportunity: OpportunitySignal,
+  monitor: BacktestMonitor | null,
+): ModelProviderScorecard {
+  const prediction = opportunity.probabilityModel.primaryPrediction
+  const external = monitor?.externalModel
+  const externalAdvisor = opportunity.externalModelAdvisor
+  const entries: ModelProviderScorecardEntry[] = [
+    {
+      id: 'local-probability',
+      label: '本地概率模型',
+      status: opportunity.decisionView.probabilityPolicy.canShowPrecise ? 'active' : 'shadow',
+      sampleSize: prediction.sampleSize,
+      qualifiedSamples: monitor?.completeEvaluatedSamples ?? 0,
+      reliability: monitor?.metricsFrozen ? null : monitor?.reliability ?? null,
+      brierScore: prediction.brierScore,
+      profitFactor: monitor?.metricsFrozen ? null : monitor?.profitFactor ?? null,
+      weightPolicy: opportunity.decisionView.probabilityPolicy.canShowPrecise ? 'low_weight' : 'shadow_only',
+      summary: opportunity.decisionView.probabilityPolicy.reason,
+    },
+    {
+      id: 'external-advisor',
+      label: externalAdvisor?.modelName ?? '外部时序军师',
+      status: externalAdvisor?.status === 'live' && external && external.evaluatedSamples >= 30 ? 'shadow' : 'disabled',
+      sampleSize: external?.sampleSize ?? 0,
+      qualifiedSamples: external?.evaluatedSamples ?? 0,
+      reliability: external?.bestBuckets[0]?.reliability ?? null,
+      brierScore: external?.bestBuckets[0]?.brierScore ?? null,
+      profitFactor: external?.bestBuckets[0]?.profitFactor ?? null,
+      weightPolicy: externalAdvisor?.backtestGate?.status === 'strong' ? 'low_weight' : 'shadow_only',
+      summary: externalAdvisor?.backtestGate?.summary ?? '外部模型需要通过 live 分桶回测后才允许低权重参考。',
+    },
+    {
+      id: 'knowledge-rules',
+      label: '黄金知识库规则包',
+      status: 'active',
+      sampleSize: opportunity.knowledgeRuleAudit.checks.length,
+      qualifiedSamples: opportunity.knowledgeRuleAudit.checks.filter((check) => check.status === 'pass').length,
+      reliability: opportunity.knowledgeRuleAudit.scoreAdjustment === 0
+        ? 50
+        : Math.max(0, Math.min(100, 50 + opportunity.knowledgeRuleAudit.scoreAdjustment * 4)),
+      brierScore: null,
+      profitFactor: null,
+      weightPolicy: opportunity.knowledgeRuleAudit.checks.some((check) => check.status === 'block') ? 'blocked' : 'low_weight',
+      summary: opportunity.knowledgeRuleAudit.summary,
+    },
+    {
+      id: 'macro-regime',
+      label: '宏观 Regime 镜像/实时因子',
+      status: opportunity.marketContext.macroRegimeEvidence?.isProductionEligible ? 'active' : 'shadow',
+      sampleSize: opportunity.marketContext.macroFactors.length,
+      qualifiedSamples: opportunity.marketContext.macroFactors.filter((factor) => factor.isProductionEligible).length,
+      reliability: opportunity.marketContext.macroRegimeEvidence?.confidence ?? null,
+      brierScore: null,
+      profitFactor: null,
+      weightPolicy: opportunity.marketContext.macroRegimeEvidence?.isProductionEligible ? 'low_weight' : 'shadow_only',
+      summary: opportunity.marketContext.macroRegimeEvidence?.sourceSummary ??
+        '宏观镜像主要用于离线校准和解释，不作为实时强提醒关键源。',
+    },
+  ]
+
+  return {
+    version: 'model-registry-v4',
+    generatedAt: new Date().toISOString(),
+    entries: entries.map((entry) => buildModelRegistryEntry(entry)),
+    promotionPolicy: {
+      minSamplesRequired: MODEL_REGISTRY_MIN_PROMOTION_SAMPLES,
+      maxBrierScore: MODEL_REGISTRY_MAX_PROMOTION_BRIER,
+      promotedRequires: [
+        'qualifiedSamples >= minSamplesRequired',
+        'Brier <= maxBrierScore',
+        'weightPolicy 不是 shadow_only/blocked',
+      ],
+    },
+    summary: '所有模型先看样本、校准和分桶表现；低样本或未校准模型只能影子跟踪，不放大买点。',
+  }
+}
+
+export function buildModelRegistryEntry(
+  entry: ModelProviderScorecardEntry,
+  reviewedAt = new Date().toISOString(),
+): ModelRegistryEntry {
+  const minSamplesRequired = MODEL_REGISTRY_MIN_PROMOTION_SAMPLES
+  const maxBrierScore = MODEL_REGISTRY_MAX_PROMOTION_BRIER
+  const hasEnoughSamples = entry.qualifiedSamples >= minSamplesRequired
+  const brierPass = entry.brierScore !== null &&
+    Number.isFinite(entry.brierScore) &&
+    entry.brierScore <= maxBrierScore
+  const canPromote = hasEnoughSamples &&
+    brierPass &&
+    entry.weightPolicy !== 'shadow_only' &&
+    entry.weightPolicy !== 'blocked'
+  const reasons = [
+    hasEnoughSamples
+      ? `合格样本 ${entry.qualifiedSamples}/${minSamplesRequired} 达标。`
+      : `合格样本 ${entry.qualifiedSamples}/${minSamplesRequired} 不足，不能 promoted。`,
+    brierPass
+      ? `Brier ${entry.brierScore?.toFixed(3)} 达标。`
+      : entry.brierScore === null
+        ? '缺少 Brier 校准误差，不能 promoted。'
+        : `Brier ${entry.brierScore.toFixed(3)} 未达标，不能 promoted。`,
+  ]
+  const promotionState: ModelRegistryEntry['promotionState'] = entry.weightPolicy === 'blocked'
+    ? 'blocked'
+    : canPromote
+      ? 'promoted'
+      : hasEnoughSamples && brierPass
+        ? 'candidate'
+        : 'shadow'
+
+  return {
+    ...entry,
+    registryVersion: 'model-registry-entry-v4',
+    providerKind: modelProviderKindFromId(entry.id),
+    promoted: promotionState === 'promoted',
+    promotionState,
+    eligibility: {
+      minSamplesRequired,
+      maxBrierScore,
+      hasEnoughSamples,
+      brierPass,
+      canPromote,
+      reasons,
+    },
+    evidence: {
+      sampleSize: entry.sampleSize,
+      qualifiedSamples: entry.qualifiedSamples,
+      reliability: entry.reliability,
+      brierScore: entry.brierScore,
+      profitFactor: entry.profitFactor,
+      summary: entry.summary,
+    },
+    governance: {
+      owner: 'gold-decision-terminal',
+      reviewedAt,
+      notes: ['v4 registry: promoted 只表示允许进入低权重治理路径，不代表放大强提醒。'],
+    },
+  }
+}
+
+function modelProviderKindFromId(id: string): ModelRegistryEntry['providerKind'] {
+  if (id === 'external-advisor') {
+    return 'external_advisor'
+  }
+  if (id === 'knowledge-rules') {
+    return 'rules'
+  }
+  if (id === 'macro-regime') {
+    return 'macro_mirror'
+  }
+  return 'local_probability'
 }
 
 function createSourceStatus(): SourceChannelStatus {
@@ -699,6 +1200,110 @@ function buildMarketReference(
         ? '工银积存金与上金所/AU9999/国内黄金参考源联合校准，仅作市场参考锚。'
         : '未获取到可用的国内黄金参考锚。',
     },
+  }
+}
+
+function buildCachedQuoteFromHistory(history: HistoryPoint[]): QuoteSample | null {
+  const latestPoint = [...history]
+    .reverse()
+    .find((point) => Number.isFinite(point.price) && point.price > 0)
+  if (!latestPoint) {
+    return null
+  }
+
+  const timestamp = latestPoint.timestamp
+  const price = latestPoint.price
+  const quote: QuoteSample = {
+    symbol: 'ICBC_ACCUMULATION_GOLD',
+    currency: 'CNY',
+    unit: '元/克',
+    price,
+    activePrice: latestPoint.activePrice ?? price,
+    regularPrice: latestPoint.regularPrice ?? price,
+    sellPrice: latestPoint.sellPrice ?? price,
+    dayLow: latestPoint.dayLow ?? price,
+    dayHigh: latestPoint.dayHigh ?? price,
+    updatedAt: timestamp,
+    fetchedAt: timestamp,
+    productName: '工银积存金',
+    productCode: 'ICBC_ACCUMULATION_GOLD',
+    sourceKind: 'fallback',
+    sourceName: '本地历史缓存 · 最近行情',
+    marketReference: {
+      sourceName: '本地历史缓存',
+      sourceUrl: '',
+      isDelayed: true,
+      tradingDate: timestamp.slice(0, 10),
+      au9999: buildCachedReferenceQuote('AU9999', 'AU9999 沪金缓存', latestPoint.referenceAu9999Price, timestamp),
+      autd: buildCachedReferenceQuote('Au(T+D)', 'Au(T+D) 缓存', latestPoint.referenceAutdPrice, timestamp),
+      domesticReferences: [
+        buildCachedReferenceQuote('ZHESHANG_ACCUMULATION_GOLD', '浙商积存金缓存', latestPoint.referenceZheshangPrice, timestamp, 'zheshang-accumulation-gold'),
+        buildCachedReferenceQuote('DOMESTIC_GOLD', '国内金缓存', latestPoint.referenceDomesticGoldPrice, timestamp, 'cngold-domestic'),
+      ].filter((item): item is MarketReferenceQuote => item !== null),
+      consensusPrice: null,
+      consensusDeviationPercent: null,
+      tradingSession: getChinaGoldTradingSession(),
+      calibration: {
+        anchorSymbol: null,
+        anchorPrice: null,
+        spread: null,
+        premiumPercent: null,
+        withinReferenceRange: null,
+        note: '实时上游暂不可用，使用本地历史缓存兜底，等待下一次刷新恢复。',
+      },
+    },
+  }
+
+  const marketReference = buildMarketReference(quote, {
+    sourceName: '本地历史缓存',
+    sourceUrl: '',
+    isDelayed: true,
+    tradingDate: timestamp.slice(0, 10),
+    au9999: quote.marketReference.au9999,
+    autd: quote.marketReference.autd,
+  }, quote.marketReference.domesticReferences?.map((item) => ({
+    symbol: item.symbol,
+    label: item.label ?? item.symbol,
+    value: item.latestPrice,
+    unit: item.unit ?? '元/克',
+    provider: item.provider ?? 'local-history-cache',
+    updatedAt: item.updatedAt ?? null,
+    previousClose: item.openPrice,
+  })) ?? [])
+
+  return attachMarketReference(quote, {
+    ...marketReference,
+    sourceName: '本地历史缓存',
+    isDelayed: true,
+    calibration: {
+      ...marketReference.calibration,
+      note: `${marketReference.calibration.note} 当前页面先展示缓存，后台刷新成功后自动切回实时行情。`,
+    },
+  })
+}
+
+function buildCachedReferenceQuote(
+  symbol: string,
+  label: string,
+  value: number | null | undefined,
+  timestamp: string,
+  provider = 'local-history-cache',
+): MarketReferenceQuote | null {
+  const latestPrice = normalizeReferencePrice(value ?? null)
+  if (latestPrice === null) {
+    return null
+  }
+  return {
+    symbol,
+    label,
+    latestPrice,
+    highPrice: latestPrice,
+    lowPrice: latestPrice,
+    openPrice: latestPrice,
+    unit: symbol === 'XAUUSD' ? '美元/盎司' : '元/克',
+    provider,
+    updatedAt: timestamp,
+    note: '本地历史缓存兜底值，仅用于页面不中断显示。',
   }
 }
 

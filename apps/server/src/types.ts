@@ -65,6 +65,14 @@ export type QuoteSourceUsage =
   | 'mirror_learning'
   | 'disabled'
 
+export type SourceSlaSourceType =
+  | 'tradeable_source'
+  | 'reference_source'
+  | 'learning_only_mirror'
+  | 'disabled_source'
+
+export type SourceSlaHealth = 'healthy' | 'watch' | 'stale' | 'diverged' | 'missing'
+
 export type QuoteSourceLedgerEntry = {
   sourceId: string
   label: string
@@ -91,6 +99,31 @@ export type QuoteSourceLedger = {
     status: 'aligned' | 'diverged' | 'unknown'
   }
   entries: QuoteSourceLedgerEntry[]
+  warnings: string[]
+}
+
+export type SourceSlaLedgerEntry = {
+  sourceId: string
+  label: string
+  sourceType: SourceSlaSourceType
+  instrument: string
+  price: number | null
+  timestamp: string | null
+  freshnessMs: number | null
+  health: SourceSlaHealth
+  discrepancyFromTradePrice: number | null
+  canUseForStrongSignal: boolean
+  note: string
+}
+
+export type SourceSlaLedger = {
+  version: 'source-sla-ledger-v1'
+  generatedAt: string
+  tradeSourceId: string
+  tradePrice: number
+  strongSignalEligible: boolean
+  summary: string
+  entries: SourceSlaLedgerEntry[]
   warnings: string[]
 }
 
@@ -761,6 +794,13 @@ export type DecisionProbabilityDisplay = {
   reason: string
 }
 
+export type ProbabilityDisplayPolicy = {
+  status: 'show_calibrated' | 'hide_precise' | 'tendency_only'
+  canShowPrecise: boolean
+  minSamplesRequired: number
+  reason: string
+}
+
 export type ExecutionState =
   | 'no_trade'
   | 'watch_only'
@@ -802,7 +842,7 @@ export type LevelValidation = {
 }
 
 export type DecisionViewModel = {
-  version: 'decision-view-v2'
+  version: 'decision-view-v3'
   action: FinalDecisionAction
   displayGrade: FinalDecision['signalGrade']
   primaryInstruction: string
@@ -818,14 +858,133 @@ export type DecisionViewModel = {
   takeProfit1: number | null
   riskRewardRatio: number | null
   probabilityDisplay: DecisionProbabilityDisplay
+  probabilityPolicy: ProbabilityDisplayPolicy
   calibrationStatus: CalibrationStatus
   levelValidation: LevelValidation
   validatedLevels: LevelValidation
   backtestValidity: BacktestValidity
   sourceHealth: SourceHealthViewModel
+  sourceLedger: SourceSlaLedger | null
   sourceWarnings: string[]
+  journalPreview: SignalJournalRecord | null
   blockerSummary: string
   updatedAt: string
+}
+
+export type SignalJournalOutcome =
+  | 'pending'
+  | 'tp1_hit'
+  | 'stop_loss_hit'
+  | 'no_touch'
+  | 'timeout'
+  | 'invalidated'
+
+export type SignalFailureReason =
+  | 'pending'
+  | 'chasing_risk'
+  | 'event_noise'
+  | 'false_breakout'
+  | 'pattern_failed'
+  | 'macro_pressure'
+  | 'source_health'
+  | 'timeframe_conflict'
+  | 'poor_risk_reward'
+  | 'model_disagreement'
+
+export type SignalJournalEntry = {
+  id: string
+  generatedAt: string
+  quoteTimestamp: string
+  price: number
+  action: FinalDecisionAction
+  executionState: ExecutionState
+  score: number
+  command: string
+  pattern: PatternKind | null
+  eventPhase: EconomicEventPhase
+  sourceHealth: SourceHealthViewModel['tradeSourceStatus']
+  riskRewardRatio: number | null
+  probabilityShown: boolean
+  outcome: SignalJournalOutcome
+  failureReason: SignalFailureReason
+  bucketKey: string
+  notes: string[]
+}
+
+export type SignalJournalEvidence = {
+  probabilityPolicyReason: string
+  displayGuards: string[]
+  sourceWarnings: string[]
+}
+
+export type SignalJournalResult = {
+  outcome: SignalJournalOutcome
+  failureReason: SignalFailureReason
+  evaluatedAt: string | null
+  returnPercent: number | null
+  notes: string[]
+}
+
+export type SignalJournalRecord = SignalJournalEntry & {
+  recordVersion: 'signal-journal-record-v4'
+  persistedAt: string
+  evidence: SignalJournalEvidence
+  result: SignalJournalResult
+}
+
+export type ModelProviderScorecardEntry = {
+  id: string
+  label: string
+  status: 'active' | 'shadow' | 'disabled'
+  sampleSize: number
+  qualifiedSamples: number
+  reliability: number | null
+  brierScore: number | null
+  profitFactor: number | null
+  weightPolicy: 'full' | 'low_weight' | 'shadow_only' | 'blocked'
+  summary: string
+}
+
+export type ModelPromotionState = 'promoted' | 'candidate' | 'shadow' | 'blocked'
+
+export type ModelRegistryEntry = ModelProviderScorecardEntry & {
+  registryVersion: 'model-registry-entry-v4'
+  providerKind: 'local_probability' | 'external_advisor' | 'rules' | 'macro_mirror'
+  promoted: boolean
+  promotionState: ModelPromotionState
+  eligibility: {
+    minSamplesRequired: number
+    maxBrierScore: number
+    hasEnoughSamples: boolean
+    brierPass: boolean
+    canPromote: boolean
+    reasons: string[]
+  }
+  evidence: {
+    sampleSize: number
+    qualifiedSamples: number
+    reliability: number | null
+    brierScore: number | null
+    profitFactor: number | null
+    summary: string
+  }
+  governance: {
+    owner: string
+    reviewedAt: string
+    notes: string[]
+  }
+}
+
+export type ModelProviderScorecard = {
+  version: 'model-registry-v4'
+  generatedAt: string
+  entries: ModelRegistryEntry[]
+  promotionPolicy: {
+    minSamplesRequired: number
+    maxBrierScore: number
+    promotedRequires: string[]
+  }
+  summary: string
 }
 
 export type PriceLevelRole =
@@ -903,7 +1062,7 @@ export type EconomicEventCategory =
   | 'geopolitical'
   | 'liquidity'
 
-export type EconomicEventSource = 'configured' | 'estimated'
+export type EconomicEventSource = 'configured' | 'estimated' | 'rss' | 'mirror'
 
 export type EconomicEventPhase =
   | 'normal'
@@ -934,6 +1093,81 @@ export type EconomicEventRisk = {
   summary: string
   warnings: string[]
   updatedAt: string
+}
+
+export type EventIntelligenceSourceUsage =
+  | 'production_calendar'
+  | 'estimation_only'
+  | 'news_watch_only'
+  | 'mirror_learning'
+
+export type EventIntelligenceItem = EconomicEvent & {
+  minutesToEvent: number
+  phase: EconomicEventPhase
+  riskLevel: EconomicEventRiskLevel
+  scorePenalty: number
+  scoreCap: number
+  positionMultiplier: number
+  sourceUsage: EventIntelligenceSourceUsage
+  sourceBoundary: string
+  isProductionEligible: boolean
+  warnings: string[]
+}
+
+export type EventIntelligenceSourceBoundary = {
+  source: EconomicEventSource
+  sourceUsage: EventIntelligenceSourceUsage
+  isProductionEligible: boolean
+  participatesInScoring: boolean
+  summary: string
+}
+
+export type EventIntelligenceResponse = {
+  version: 'event-intelligence-v4'
+  generatedAt: string
+  current: EconomicEventRisk
+  activeItem: EventIntelligenceItem | null
+  items: EventIntelligenceItem[]
+  sourceBoundaries: EventIntelligenceSourceBoundary[]
+  summary: string
+  usageBoundary: string
+  warnings: string[]
+}
+
+export type DecisionEvidencePacket = {
+  version: 'decision-evidence-v4'
+  generatedAt: string
+  quoteTimestamp: string
+  symbol: string
+  price: number
+  singleCommand: string
+  actionAllowed: boolean
+  executionState: ExecutionState
+  decision: {
+    action: FinalDecisionAction
+    executionState: ExecutionState
+    command: string
+    score: number
+    level: OpportunityLevel
+    actionAllowed: boolean
+    blockerSummary: string
+  }
+  evidence: Array<{
+    id: string
+    label: string
+    status: 'supporting' | 'opposing' | 'blocking' | 'informational'
+    summary: string
+    sourceUsage: EventIntelligenceSourceUsage | 'production_realtime' | 'reference_calibration' | 'shadow_only'
+  }>
+  eventIntelligence: EventIntelligenceResponse
+  sourceLedger: SourceSlaLedger
+  modelScorecard: ModelProviderScorecard
+  boundary: {
+    productionDecisionInputs: string[]
+    referenceOnlyInputs: string[]
+    learningOnlyInputs: string[]
+  }
+  summary: string
 }
 
 export type PsychologyRiskKind =
@@ -1106,6 +1340,7 @@ export type QuoteApiResponse = {
   sourceKind: QuoteSourceKind
   sourceStatus: SourceStatus
   sourceLedger: QuoteSourceLedger
+  sourceSlaLedger: SourceSlaLedger
   dayRange: {
     low: number
     high: number

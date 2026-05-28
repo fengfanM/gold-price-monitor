@@ -327,6 +327,8 @@ describe('market providers', () => {
   it('scores gold news RSS sentiment from titles', async () => {
     globalThis.fetch = (async () => new Response([
       '<rss><channel>',
+      '<item><title><![CDATA["gold price OR GLD" - Google 新闻]]></title></item>',
+      '<item><title><![CDATA[Google 新闻]]></title></item>',
       '<item><title><![CDATA[Gold rallies as rate cut hopes lift safe haven demand]]></title></item>',
       '<item><title><![CDATA[Gold falls as stronger dollar pressures bullion]]></title></item>',
       '</channel></rss>',
@@ -338,6 +340,28 @@ describe('market providers', () => {
     assert.equal(result.data?.sources.length, 2)
     assert.equal(typeof result.data?.score, 'number')
     assert.equal(result.data?.confidence, 34)
+  })
+
+  it('keeps RSS sentiment live when at least one configured feed succeeds', async () => {
+    process.env.GOLD_NEWS_RSS_URLS = 'https://slow.example.com/rss,https://ok.example.com/rss'
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('slow.example.com')) {
+        throw new DOMException('This operation was aborted', 'AbortError')
+      }
+      return new Response([
+        '<rss><channel>',
+        '<item><title><![CDATA[Gold rallies as dollar weakens and rate cut bets rise]]></title></item>',
+        '<item><title><![CDATA[Bullion gains on safe haven demand]]></title></item>',
+        '</channel></rss>',
+      ].join(''))
+    }) as typeof fetch
+
+    const result = await fetchGoldNewsSentiment()
+
+    assert.equal(result.status, 'live')
+    assert.equal(result.data?.sources.length, 2)
+    assert.equal(result.error, null)
   })
 
   it('scores blogger credibility feeds with lower confidence than news', async () => {

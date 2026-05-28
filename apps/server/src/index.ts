@@ -99,6 +99,126 @@ async function main() {
     }
   })
 
+  app.get('/api/source-ledger', async (_request, response) => {
+    try {
+      await service.refreshIfStale()
+      response.json({
+        success: true,
+        data: service.getSourceLedgerResponse(),
+      })
+    } catch (error) {
+      response.status(502).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  })
+
+  app.get('/api/events', async (_request, response) => {
+    try {
+      await service.refreshIfStale()
+      response.json({
+        success: true,
+        data: service.getEventsResponse(),
+      })
+    } catch (error) {
+      response.status(502).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  })
+
+  app.get('/api/event-intelligence', async (_request, response) => {
+    try {
+      await service.refreshIfStale()
+      response.json({
+        success: true,
+        data: service.getEventIntelligenceResponse(),
+      })
+    } catch (error) {
+      response.status(502).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  })
+
+  app.get('/api/decision-evidence', async (_request, response) => {
+    try {
+      await service.refreshIfStale()
+      response.json({
+        success: true,
+        data: service.getDecisionEvidenceResponse(),
+      })
+    } catch (error) {
+      response.status(502).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  })
+
+  app.get('/api/journal', async (_request, response) => {
+    try {
+      await service.refreshIfStale()
+      response.json({
+        success: true,
+        data: service.getJournalResponse(),
+      })
+    } catch (error) {
+      response.status(502).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  })
+
+  app.get('/api/signal-journal', async (_request, response) => {
+    try {
+      await service.refreshIfStale()
+      response.json({
+        success: true,
+        data: service.getJournalResponse(),
+      })
+    } catch (error) {
+      response.status(502).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  })
+
+  app.get('/api/model-scorecard', async (_request, response) => {
+    try {
+      await service.refreshIfStale()
+      response.json({
+        success: true,
+        data: service.getModelScorecardResponse(),
+      })
+    } catch (error) {
+      response.status(502).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  })
+
+  app.get('/api/model-registry', async (_request, response) => {
+    try {
+      await service.refreshIfStale()
+      response.json({
+        success: true,
+        data: service.getModelScorecardResponse(),
+      })
+    } catch (error) {
+      response.status(502).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  })
+
   app.get('/api/providers/health', async (request, response) => {
     try {
       const shouldProbe = request.query.probe !== '0'

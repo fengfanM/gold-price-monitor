@@ -29,14 +29,17 @@ Gold Price Monitor 的目标就是把这些问题变成一套清晰、可复盘�
 | --- | --- | --- |
 | 主行情 | 工银积存金主报价，官方异步接口优先，公开页面 fallback | 周末和非交易时段不更新正常；工作日必须看 freshness |
 | 多源校准 | 上金所 / AU9999、金投网、浙商积存金、国际金、汇率和宏观源框架 | 不同源有延迟和口径差异，不能粗暴平均 |
-| 本地概率模型 | `rules-calibrated-logit-triple-barrier-v1`，输出 `5m / 15m / 60m / 240m` TP1 先达概率 | 这是规则校准 logit + 路径标签，不是深度学习训练模型 |
+| 统一决策证据 | `decision-evidence-v4`，把数据源、事件、模型、形态、赔率、回测和风险预算收口到单一口径 | 前端组件不得自行二次推断动作、概率或关键价 |
+| 本地概率模型 | `rules-calibrated-logit-triple-barrier-v1`，输出 `5m / 15m / 60m / 240m` TP1 先达倾向 | 这是规则校准 logit + 路径标签，不是深度学习训练模型 |
 | 买点评分 | 技术、形态、估值、宏观、事件、心理纪律、交易计划和回测共同影响分数与上限 | 分数不是买入指令 |
 | 知识库规则包 | `gold-kb-rule-pack-v3`，审校趋势结构、形态位置、假突破、事件阶段、赔率纪律和宏观 regime | 规则包用于拦截误判，不保证 100% 正确 |
-| 统一预测口径 | `canonicalForecast`，统一图上预测区间、TP1先达概率、支撑/压力、止损和目标 | 前端不再自行把形态置信度当成功率 |
+| 事件智能 | `event-intelligence-v4`，输出 CPI/PCE/FOMC/NFP/Fed/地缘事件阶段、交易限制和来源边界 | 估算事件和 RSS 只用于风控/解释，不能单独放大买点 |
+| 统一预测口径 | `canonicalForecast` + `DecisionEvidencePacket`，统一图上情景区间、TP1先达倾向、支撑/压力、止损和目标 | 前端不再自行把形态置信度当成功率 |
 | 外部军师 | `EXTERNAL_TS_MODEL_URL` / `EXTERNAL_TS_MODEL_ENDPOINTS` HTTP 接口，支持多 provider schema | 接口支持不等于所有 provider 已生产稳定运行 |
 | Chronos-Bolt | 可选本地 Chronos-Bolt 推理服务，已做过真实模型联调 | 当前不能宣传为已验证高准确率交易模型 |
-| 回测 gate | 策略桶和外部模型桶，统计胜率、超额胜率、PF、Brier、MAE、回撤 | historical 不能直接污染 live gate |
-| 前端终端 | 分时、K线、MA、BOLL、RSI、MACD、预测区间、五个决策 Tab | UI 是解释层，不消除投资风险 |
+| 回测 gate | 完整 triple-barrier 样本、策略桶和外部模型桶，统计 TP1 先达、止损先达、PF、Brier、MAE/MFE、回撤 | incomplete 或样本不足时冻结概率展示 |
+| 信号日志 | `SignalJournalRecord` 记录证据快照、纸面计划、路径标签和失败归因 | 当前用于复盘与校准，不接真实账户、不自动下单 |
+| 前端终端 | 分时、K线、MA、BOLL、RSI、MACD、事件/宏观播报、五个决策 Tab、小白/专业模式 | UI 是解释层，不消除投资风险 |
 
 ## Data Calibration
 
@@ -54,6 +57,34 @@ Gold Price Monitor 的目标就是把这些问题变成一套清晰、可复盘�
 | FX and macro | USD/CNY, DXY, real yield, inflation, VIX | 判断人民币计价黄金是否有宏观顺风/逆风 |
 | Positioning and flow | COT, GLD, WGC ETF, CME OI/volume | 判断资金拥挤、流入流出和趋势参与度 |
 | Text/event sources | RSS, blogger feeds, CPI/FOMC/NFP windows | 只做低权重解释和事件风险，不直接喊单 |
+
+## Decision Evidence v4
+
+v4 的核心变化是把页面上所有“现在该不该动”的信息压到一个后端证据包：`DecisionEvidencePacket`。它不是多写一层 DTO，而是交易可信度的边界：前端只读这个证据包，不再各组件分别用 `score`、`tradePlan`、`pattern confidence` 或 `backtest` 自己拼结论。
+
+| Field | Purpose | Trading boundary |
+| --- | --- | --- |
+| `singleCommand` | 一句话口令：现在做什么、等什么价、错了哪里退出 | 小白优先读这里 |
+| `executionState` | `no_trade` / `watch_only` / `waiting_for_trigger` / `trigger_missed` / `invalidated` 等 | 触发价错过必须显示“不追” |
+| `validatedLevels` | 只保留方向、赔率和当前价逻辑都有效的关键价 | 无效 TP1/止损/支撑压力不得画成操作价 |
+| `probabilityPolicy` | 控制精确概率是否允许展示 | 样本不足、Brier 不合格、事件第一波、关键源异常时隐藏精确数字 |
+| `sourceLedger` | 工银主交易价、AU9999/AuTD/浙商/国内金/国际金/宏观镜像的 SLA | 主交易源不健康或参考偏离异常时冻结强提醒 |
+| `eventState` | 事件前、事件第一波、事件后二次确认、普通时段 | 事件第一波默认不追 |
+| `modelScorecard` | 本地规则、Chronos、宏观模型、多周期模型的 promotion/shadow 状态 | 未校准模型只能观察，不放大买点 |
+| `journalPreview` | 当前信号的复盘记录预览 | 后续用于样本分桶、失败归因和模型迭代 |
+
+### Source SLA Ledger
+
+所有数据源被分成四类：
+
+| Source usage | Examples | Can amplify strong signal? |
+| --- | --- | --- |
+| `tradeable_source` | 工银积存金主报价 | 可以，但必须新鲜且无异常 |
+| `reference_source` | AU9999、AuTD、浙商、国内金、国际金、汇率 | 只能校准与否决，不能替代主交易价 |
+| `learning_only_mirror` | FRED/CPI/利率/VIX 镜像因子、历史 CSV | 只用于离线分桶、解释和降级 |
+| `disabled_source` | 未授权、字段不可解析、反爬失败或用户未配置源 | 不参与生产强提醒 |
+
+当前项目刻意不伪装缺失的专业数据：`GLD_FLOW`、`LBMA_GOLD_PM`、`CME_GOLD_OI`、`CME_GOLD_VOLUME` 若没有官方/授权 CSV 或稳定内部镜像，会展示为 unavailable，并直接限制强信号可信度。
 
 ## Model Stack
 
@@ -83,7 +114,7 @@ Gold Price Monitor 的目标就是把这些问题变成一套清晰、可复盘�
 
 ### Knowledge Rule Pack
 
-`gold-kb-rule-pack-v1` 把知识库里的交易原则变成可审计 gate。它不会“替用户下单”，而是专门防止常见误判：候选双底没确认就追、箱体中位硬买、事件第一波冲动追单、假突破高位接力、赔率不足还强提醒。
+`gold-kb-rule-pack-v3` 把知识库里的交易原则变成可审计 gate。它不会“替用户下单”，而是专门防止常见误判：候选双底没确认就追、箱体中位硬买、事件第一波冲动追单、假突破高位接力、赔率不足还强提醒。
 
 | Rule | What it checks | If it fails |
 | --- | --- | --- |
@@ -94,6 +125,19 @@ Gold Price Monitor 的目标就是把这些问题变成一套清晰、可复盘�
 | `kb:macro-evidence-gate` | 实际利率、美元、核心 CPI、VIX、CME OI/Volume、COT/ETF/WGC 资金流 | 宏观压力组合强制降级；镜像数据只作离线校准参考，不放大实时强提醒 |
 | `kb:event-phase` | CPI/FOMC/非农等事件阶段 | 事件第一波不追单 |
 | `kb:risk-reward-discipline` | 交易计划赔率是否至少 2:1 | 赔率不足时拦截 |
+
+### Event Intelligence
+
+事件模块不是新闻瀑布流，而是风控状态机：
+
+| Phase | Meaning | System behavior |
+| --- | --- | --- |
+| `pre_event` | CPI/PCE/FOMC/NFP/Fed 讲话等事件临近 | 降低追单和仓位，提示等待确认 |
+| `first_wave` | 事件公布后第一波剧烈波动 | 默认禁止强提醒，防假突破和滑点 |
+| `post_confirmation` | 第一波后进入二次确认 | 需要整理区、突破、回踩和跨市场一致性 |
+| `normal` | 不在核心窗口 | 可展示近期观察事件，但不把估算事件当官方日历 |
+
+RSS 新闻和博主观点使用并行多源抓取。任一 RSS 源超时不会拖垮整体情绪，但标题情绪只作为解释和降级证据，不作为交易触发器。
 
 ### External Advisor Model
 
@@ -182,7 +226,7 @@ EXTERNAL_TS_MODEL_CONTEXT_POINTS=256
 
 | Metric | Why it matters |
 | --- | --- |
-| `qualifiedSamples` | 样本太少时禁止过度解释 |
+| `qualifiedSamples` / `completeSamples` | 样本太少或路径不完整时禁止过度解释 |
 | `winRate` | 看方向命中率 |
 | `baselineWinRate` | 防止把自然上涨行情误认为模型能力 |
 | `excessWinRate` | 判断是否相对基准有增益 |
@@ -204,6 +248,8 @@ EXTERNAL_TS_MODEL_CONTEXT_POINTS=256
 | `timeout` | 数据路径不足，不能完整评价 |
 
 这让“胜率”更接近真实交易体验：同样是最终上涨，如果中途先打止损，就不能算成功。
+
+如果完整样本少于 30，或者 `complete=false` 占比过高，前端必须隐藏精确概率、胜率和回测增益，只保留“样本不足 / 概率隐藏 / 方向倾向”。这是为了避免把漂亮数字误读成确定性机会。
 
 ### Canonical Forecast
 
@@ -292,7 +338,6 @@ npm run chronos:local
 npm run verify:chronos
 npm run validate:historical
 npm run test --workspace server
-npm run lint --workspace web
 npm run build
 ```
 

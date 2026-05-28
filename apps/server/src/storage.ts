@@ -9,6 +9,7 @@ import type {
   MarketContext,
   MarketFactor,
   ProviderHealthSnapshot,
+  SignalJournalRecord,
 } from './types.js'
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url))
@@ -20,7 +21,9 @@ const MARKET_CONTEXT_FILE = path.join(DATA_DIR, 'market-context.json')
 const BACKTEST_SNAPSHOTS_FILE = path.join(DATA_DIR, 'backtest-snapshots.json')
 const FACTORS_FILE = path.join(DATA_DIR, 'market-factors.json')
 const PROVIDER_HEALTH_FILE = path.join(DATA_DIR, 'provider-health-history.json')
+const SIGNAL_JOURNAL_FILE = path.join(DATA_DIR, 'signal-journal.json')
 const BACKTEST_SNAPSHOT_LIMIT = Number(process.env.BACKTEST_SNAPSHOT_LIMIT ?? '20000')
+const SIGNAL_JOURNAL_LIMIT = Number(process.env.SIGNAL_JOURNAL_LIMIT ?? '2000')
 const SQLITE_FILE = process.env.SQLITE_FILE
   ? path.resolve(process.env.SQLITE_FILE)
   : path.join(DATA_DIR, 'gold-monitor.sqlite')
@@ -53,6 +56,11 @@ type PersistedProviderHealth = {
   snapshots: ProviderHealthSnapshot[]
 }
 
+type PersistedSignalJournal = {
+  updatedAt: string
+  records: SignalJournalRecord[]
+}
+
 export type HistoryStorageAdapter = {
   readonly kind: string
   loadHistory(): Promise<HistoryPoint[]>
@@ -66,6 +74,8 @@ export type HistoryStorageAdapter = {
   saveFactors(factors: MarketFactor[]): Promise<void>
   loadProviderHealthSnapshots(): Promise<ProviderHealthSnapshot[]>
   saveProviderHealthSnapshot(snapshot: ProviderHealthSnapshot): Promise<void>
+  loadSignalJournalRecords(): Promise<SignalJournalRecord[]>
+  saveSignalJournalRecord(record: SignalJournalRecord): Promise<void>
 }
 
 class FileHistoryStorage implements HistoryStorageAdapter {
@@ -77,6 +87,7 @@ class FileHistoryStorage implements HistoryStorageAdapter {
     private readonly backtestSnapshotsFile: string,
     private readonly factorsFile: string,
     private readonly providerHealthFile: string,
+    private readonly signalJournalFile: string,
   ) {}
 
   async loadHistory(): Promise<HistoryPoint[]> {
@@ -170,6 +181,24 @@ class FileHistoryStorage implements HistoryStorageAdapter {
       snapshots: [...existing, snapshot].slice(-300),
     })
   }
+
+  async loadSignalJournalRecords(): Promise<SignalJournalRecord[]> {
+    try {
+      const raw = await readFile(this.signalJournalFile, 'utf8')
+      const parsed = JSON.parse(raw) as PersistedSignalJournal
+      return Array.isArray(parsed.records) ? parsed.records : []
+    } catch {
+      return []
+    }
+  }
+
+  async saveSignalJournalRecord(record: SignalJournalRecord) {
+    const existing = await this.loadSignalJournalRecords()
+    await writeJsonAtomic(this.signalJournalFile, {
+      updatedAt: new Date().toISOString(),
+      records: mergeSignalJournalRecords(existing, [record]),
+    })
+  }
 }
 
 class SqliteHistoryStorage implements HistoryStorageAdapter {
@@ -222,6 +251,15 @@ class SqliteHistoryStorage implements HistoryStorageAdapter {
   async saveProviderHealthSnapshot(snapshot: ProviderHealthSnapshot) {
     const existing = await this.loadProviderHealthSnapshots()
     await this.writeJson('providerHealthSnapshots', [...existing, snapshot].slice(-600))
+  }
+
+  async loadSignalJournalRecords() {
+    return this.readJson<SignalJournalRecord[]>('signalJournalRecords', [])
+  }
+
+  async saveSignalJournalRecord(record: SignalJournalRecord) {
+    const existing = await this.loadSignalJournalRecords()
+    await this.writeJson('signalJournalRecords', mergeSignalJournalRecords(existing, [record]))
   }
 
   private async readJson<T>(key: string, fallback: T): Promise<T> {
@@ -299,6 +337,15 @@ class PostgresHttpHistoryStorage implements HistoryStorageAdapter {
   async saveProviderHealthSnapshot(snapshot: ProviderHealthSnapshot) {
     const existing = await this.loadProviderHealthSnapshots()
     await this.writeJson('providerHealthSnapshots', [...existing, snapshot].slice(-600))
+  }
+
+  async loadSignalJournalRecords() {
+    return this.readJson<SignalJournalRecord[]>('signalJournalRecords', [])
+  }
+
+  async saveSignalJournalRecord(record: SignalJournalRecord) {
+    const existing = await this.loadSignalJournalRecords()
+    await this.writeJson('signalJournalRecords', mergeSignalJournalRecords(existing, [record]))
   }
 
   private async readJson<T>(key: string, fallback: T): Promise<T> {
@@ -419,6 +466,15 @@ class PostgresDirectHistoryStorage implements HistoryStorageAdapter {
     await this.writeJson('providerHealthSnapshots', [...existing, snapshot].slice(-600))
   }
 
+  async loadSignalJournalRecords() {
+    return this.readJson<SignalJournalRecord[]>('signalJournalRecords', [])
+  }
+
+  async saveSignalJournalRecord(record: SignalJournalRecord) {
+    const existing = await this.loadSignalJournalRecords()
+    await this.writeJson('signalJournalRecords', mergeSignalJournalRecords(existing, [record]))
+  }
+
   private async readJson<T>(key: string, fallback: T): Promise<T> {
     this.assertConfigured()
     await this.ensureTable()
@@ -507,6 +563,14 @@ class PlannedCloudHistoryStorage implements HistoryStorageAdapter {
   async saveProviderHealthSnapshot(): Promise<void> {
     throw new Error(`${this.kind} Provider 健康历史存储适配器尚未配置，请先接入对应云存储客户端。`)
   }
+
+  async loadSignalJournalRecords(): Promise<SignalJournalRecord[]> {
+    throw new Error(`${this.kind} 信号日志存储适配器尚未配置，请先接入对应云存储客户端。`)
+  }
+
+  async saveSignalJournalRecord(): Promise<void> {
+    throw new Error(`${this.kind} 信号日志存储适配器尚未配置，请先接入对应云存储客户端。`)
+  }
 }
 
 export function createHistoryStorage(kind = STORAGE_ADAPTER): HistoryStorageAdapter {
@@ -517,6 +581,7 @@ export function createHistoryStorage(kind = STORAGE_ADAPTER): HistoryStorageAdap
       BACKTEST_SNAPSHOTS_FILE,
       FACTORS_FILE,
       PROVIDER_HEALTH_FILE,
+      SIGNAL_JOURNAL_FILE,
     )
   }
 
@@ -583,11 +648,35 @@ export async function saveProviderHealthSnapshot(snapshot: ProviderHealthSnapsho
   await storage.saveProviderHealthSnapshot(snapshot)
 }
 
+export async function loadSignalJournalRecords(): Promise<SignalJournalRecord[]> {
+  return storage.loadSignalJournalRecords()
+}
+
+export async function saveSignalJournalRecord(record: SignalJournalRecord) {
+  await storage.saveSignalJournalRecord(record)
+}
+
 export function mergeBacktestSnapshots(
   existing: BacktestSnapshot[],
   incoming: BacktestSnapshot[],
 ) {
   return normalizeBacktestSnapshots([...existing, ...incoming])
+}
+
+export function mergeSignalJournalRecords(
+  existing: SignalJournalRecord[],
+  incoming: SignalJournalRecord[],
+) {
+  const merged = new Map<string, SignalJournalRecord>()
+  for (const record of [...existing, ...incoming]) {
+    if (!record.id || record.recordVersion !== 'signal-journal-record-v4') {
+      continue
+    }
+    merged.set(record.id, record)
+  }
+  return [...merged.values()]
+    .sort((left, right) => new Date(left.quoteTimestamp).getTime() - new Date(right.quoteTimestamp).getTime())
+    .slice(-Math.max(100, SIGNAL_JOURNAL_LIMIT))
 }
 
 function normalizeBacktestSnapshots(snapshots: BacktestSnapshot[]) {

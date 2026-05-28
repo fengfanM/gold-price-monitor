@@ -7,6 +7,7 @@ import {
 } from './model.js'
 import type {
   CanonicalForecast,
+  BacktestMonitor,
   DecisionOverlay,
   DecisionViewModel,
   EconomicEventRisk,
@@ -43,6 +44,7 @@ export function buildOpportunitySignal(
   marketContext?: MarketContext,
   patternSignals: PatternSignal[] = [],
   externalModelAdvisor: ExternalModelAdvisor | null = null,
+  backtestMonitor: BacktestMonitor | null = null,
 ): OpportunitySignal {
   const technicals = buildTechnicalSnapshot(history, latestQuote)
   return evaluateOpportunity({
@@ -54,6 +56,7 @@ export function buildOpportunitySignal(
     marketContext: marketContext ?? buildNeutralMarketContext(),
     patternSignals,
     externalModelAdvisor,
+    backtestMonitor,
   })
 }
 
@@ -66,6 +69,7 @@ export function evaluateOpportunity(input: {
   marketContext?: MarketContext
   patternSignals?: PatternSignal[]
   externalModelAdvisor?: ExternalModelAdvisor | null
+  backtestMonitor?: BacktestMonitor | null
 }): OpportunitySignal {
   const {
     history,
@@ -76,6 +80,7 @@ export function evaluateOpportunity(input: {
     technicals,
     patternSignals = [],
     externalModelAdvisor = null,
+    backtestMonitor = null,
   } = input
   const reasons: string[] = []
   const risks: string[] = []
@@ -84,8 +89,7 @@ export function evaluateOpportunity(input: {
   const valuation = buildValuationMetrics(history, latestQuote)
   const confluence = buildMultiTimeframeConfluence(history, latestQuote)
   const eventRisk = buildEconomicEventRisk(latestQuote.fetchedAt)
-  const probabilityModel = predictProbabilityModel({
-    features: extractProbabilityFeatures({
+  const probabilityFeatures = extractProbabilityFeatures({
       history,
       latestQuote,
       stats,
@@ -93,7 +97,10 @@ export function evaluateOpportunity(input: {
       technicals,
       patternSignals,
       confluence,
-    }),
+    })
+  const probabilityModel = predictProbabilityModel({
+    features: probabilityFeatures,
+    calibration: backtestMonitor?.probabilityModel.horizons,
   })
   const preTradeKnowledgeRuleAudit = buildKnowledgeRuleAudit({
     history,
@@ -674,6 +681,7 @@ function buildDecisionViewModel(input: {
   const prediction = probabilityModel.primaryPrediction
   const calibrationStatus = buildCalibrationStatus(finalDecision, prediction)
   const probabilityDisplay = buildDecisionProbabilityDisplay(finalDecision, prediction, calibrationStatus)
+  const probabilityPolicy = buildProbabilityDisplayPolicy(probabilityDisplay, calibrationStatus)
   const levelValidation = buildLevelValidation(canonicalForecast, latestQuote.price)
   const executionState = deriveExecutionState(finalDecision, tradePlan, levelValidation, latestQuote.price)
   const actionAllowed =
@@ -699,7 +707,7 @@ function buildDecisionViewModel(input: {
   ])
 
   return {
-    version: 'decision-view-v2',
+    version: 'decision-view-v3',
     action: actionAllowed ? finalDecision.action : executionState === 'reduce_position' ? 'reduce' : executionState === 'no_trade' || executionState === 'invalidated' ? 'avoid' : 'watch',
     displayGrade: finalDecision.signalGrade,
     primaryInstruction: finalDecision.userAdvice,
@@ -721,12 +729,15 @@ function buildDecisionViewModel(input: {
     takeProfit1: tradePlan.takeProfit1,
     riskRewardRatio: tradePlan.riskRewardRatio,
     probabilityDisplay,
+    probabilityPolicy,
     calibrationStatus,
     levelValidation,
     validatedLevels: levelValidation,
     backtestValidity,
     sourceHealth,
+    sourceLedger: null,
     sourceWarnings,
+    journalPreview: null,
     blockerSummary: finalDecision.blockedReasons[0] ?? finalDecision.downgradeReasons[0] ?? '暂无硬性拦截，继续按交易计划复核。',
     updatedAt: canonicalForecast.generatedAt,
   }
@@ -835,12 +846,20 @@ function buildDecisionBacktestValidity(
   calibrationStatus: DecisionViewModel['calibrationStatus'],
 ): DecisionViewModel['backtestValidity'] {
   const minSamplesRequired = 30
-  const metricsEnabled = calibrationStatus.canShowNumericProbability
+  const hasUsableSample = calibrationStatus.sampleStatus === 'usable' || calibrationStatus.sampleStatus === 'robust'
+  const brierOk = calibrationStatus.brierScore !== null &&
+    Number.isFinite(calibrationStatus.brierScore) &&
+    calibrationStatus.brierScore <= 0.24
+  const metricsEnabled = hasUsableSample && brierOk
   return {
     completeSamples: calibrationStatus.sampleSize,
     incompleteSampleRate: null,
     metricsEnabled,
-    freezeReason: metricsEnabled ? null : calibrationStatus.reason,
+    freezeReason: metricsEnabled
+      ? null
+      : !hasUsableSample
+        ? `样本 ${calibrationStatus.sampleSize} 个，未达到 ${minSamplesRequired} 个合格样本门槛。`
+        : 'Brier 校准误差偏高，暂不参与实时概率校准。',
     minSamplesRequired,
   }
 }
@@ -956,6 +975,26 @@ function buildDecisionProbabilityDisplay(
     value: null,
     label: '样本不足',
     reason: calibrationStatus.reason,
+  }
+}
+
+function buildProbabilityDisplayPolicy(
+  probabilityDisplay: DecisionViewModel['probabilityDisplay'],
+  calibrationStatus: DecisionViewModel['calibrationStatus'],
+): DecisionViewModel['probabilityPolicy'] {
+  if (probabilityDisplay.mode === 'calibrated' && probabilityDisplay.value !== null) {
+    return {
+      status: 'show_calibrated',
+      canShowPrecise: true,
+      minSamplesRequired: 30,
+      reason: calibrationStatus.reason,
+    }
+  }
+  return {
+    status: probabilityDisplay.mode === 'tendency' ? 'tendency_only' : 'hide_precise',
+    canShowPrecise: false,
+    minSamplesRequired: 30,
+    reason: probabilityDisplay.reason || calibrationStatus.reason,
   }
 }
 
@@ -1978,18 +2017,23 @@ function buildFinalDecision(input: {
             status: 'watch',
             reason: '暂无已确认看多结构，不能把规则分直接放大为强买点。',
           },
-    sampleStatus === 'robust' || sampleStatus === 'usable'
+    (sampleStatus === 'robust' || sampleStatus === 'usable') &&
+      prediction.brierScore !== null &&
+      Number.isFinite(prediction.brierScore) &&
+      prediction.brierScore <= 0.24
       ? {
           id: 'walk-forward-sample',
           label: '历史验证',
           status: 'pass',
-          reason: `概率样本 ${prediction.sampleSize} 个，已可用于低权重校准。`,
+          reason: `概率样本 ${prediction.sampleSize} 个，Brier ${prediction.brierScore.toFixed(3)}，已可用于低权重校准。`,
         }
       : {
           id: 'walk-forward-sample',
           label: '历史验证',
           status: 'watch',
-          reason: `概率样本 ${prediction.sampleSize} 个，尚未达到稳定样本外验证。`,
+          reason: prediction.brierScore !== null && Number.isFinite(prediction.brierScore) && prediction.brierScore > 0.24
+            ? `概率样本 ${prediction.sampleSize} 个，但 Brier ${prediction.brierScore.toFixed(3)} 未达标，暂不展示精确概率。`
+            : `概率样本 ${prediction.sampleSize} 个，尚未达到稳定样本外验证。`,
         },
     !externalModelAdvisor || externalModelAdvisor.status === 'unconfigured'
       ? {

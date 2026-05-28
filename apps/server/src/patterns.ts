@@ -19,6 +19,9 @@ type MicroCandle = {
 }
 
 const MAX_PATTERNS = 5
+const STRUCTURAL_CONFIRMATION_BARS = 10
+const STRUCTURAL_CANDIDATE_BARS = 18
+const STRUCTURAL_ACTIVE_BARS = 18
 
 export function detectPatternSignals(
   history: HistoryPoint[],
@@ -31,16 +34,213 @@ export function detectPatternSignals(
 
   const swings = detectSwingPoints(points)
   const patterns = [
-    detectDoubleBottom(points, swings),
-    detectDoubleTop(points, swings),
+    ...detectDoubleBottom(points, swings),
+    ...detectDoubleTop(points, swings),
     detectSupportRebound(points, swings),
     detectResistanceRejection(points, swings),
     ...detectCandlestickPatterns(points),
   ].filter((item): item is PatternSignal => item !== null)
+  const displayPatterns = patterns.length > 0
+    ? patterns
+    : detectFallbackPatternObservations(points, swings)
 
-  return patterns
+  return selectDisplayPatterns(displayPatterns)
+}
+
+function selectDisplayPatterns(patterns: PatternSignal[]) {
+  const sorted = resolveDirectionalConflicts(downgradeOverlappingLevelPatterns(patterns))
     .sort((left, right) => right.confidence - left.confidence)
-    .slice(0, MAX_PATTERNS)
+  const selected: PatternSignal[] = []
+  const usedKinds = new Set<PatternSignal['kind']>()
+
+  for (const pattern of sorted) {
+    if (usedKinds.has(pattern.kind)) {
+      continue
+    }
+    selected.push(pattern)
+    usedKinds.add(pattern.kind)
+    if (selected.length >= MAX_PATTERNS) {
+      return selected
+    }
+  }
+
+  return selected
+}
+
+function downgradeOverlappingLevelPatterns(patterns: PatternSignal[]): PatternSignal[] {
+  const hasConfirmedDoubleBottom = patterns.some((pattern) =>
+    pattern.kind === 'double_bottom' && pattern.confirmationStatus === 'confirmed')
+  const hasConfirmedDoubleTop = patterns.some((pattern) =>
+    pattern.kind === 'double_top' && pattern.confirmationStatus === 'confirmed')
+
+  return patterns.map((pattern) => {
+    const overlapsBullishStructure = hasConfirmedDoubleBottom &&
+      pattern.kind === 'support_rebound' &&
+      pattern.confirmationStatus === 'confirmed'
+    const overlapsBearishStructure = hasConfirmedDoubleTop &&
+      pattern.kind === 'resistance_rejection' &&
+      pattern.confirmationStatus === 'confirmed'
+    if (!overlapsBullishStructure && !overlapsBearishStructure) {
+      return pattern
+    }
+
+    return {
+      ...pattern,
+      label: pattern.kind === 'support_rebound' ? '支撑观察' : '阻力观察',
+      confirmationStatus: 'candidate' as const,
+      confirmationReason: '该价位与已确认主形态重叠，只作为辅助位置观察，不重复计为确认信号。',
+      stateReason: '同一区域已有更完整的主形态确认，该卡片降级为辅助观察。',
+      contextTags: [...(pattern.contextTags ?? []), 'overlap_downgraded'],
+      confidence: Math.max(36, pattern.confidence - 10),
+    }
+  })
+}
+
+function resolveDirectionalConflicts(patterns: PatternSignal[]): PatternSignal[] {
+  const confirmed = patterns.filter((pattern) => pattern.confirmationStatus === 'confirmed')
+  const bullishConfirmed = confirmed
+    .filter((pattern) => pattern.direction === 'bullish')
+    .sort((left, right) => right.confidence - left.confidence)
+  const bearishConfirmed = confirmed
+    .filter((pattern) => pattern.direction === 'bearish')
+    .sort((left, right) => right.confidence - left.confidence)
+
+  if (bullishConfirmed.length === 0 || bearishConfirmed.length === 0) {
+    return patterns
+  }
+
+  const keepDirection = (bullishConfirmed[0]?.confidence ?? 0) >= (bearishConfirmed[0]?.confidence ?? 0)
+    ? 'bullish'
+    : 'bearish'
+
+  return patterns.map((pattern) => {
+    if (pattern.confirmationStatus !== 'confirmed' || pattern.direction === keepDirection) {
+      return pattern
+    }
+    return {
+      ...pattern,
+      label: pattern.label.replace('确认', '候选'),
+      confirmationStatus: 'candidate' as const,
+      confirmationReason: '当前窗口同时出现相反方向确认形态，系统只保留更强方向为已确认；该项降级为冲突候选。',
+      stateReason: '多空形态冲突，不能同时当作已确认交易依据。',
+      contextTags: [...(pattern.contextTags ?? []), 'direction_conflict_downgraded'],
+      confidence: Math.max(36, pattern.confidence - 12),
+    }
+  })
+}
+
+function detectFallbackPatternObservations(
+  points: PricePoint[],
+  swings: SwingPoint[],
+): PatternSignal[] {
+  const latest = points[points.length - 1]
+  if (!latest || points.length < 12) {
+    return []
+  }
+
+  const recent = points.slice(-36)
+  const recentHigh = Math.max(...recent.map((point) => point.price))
+  const recentLow = Math.min(...recent.map((point) => point.price))
+  const range = Math.max(recentHigh - recentLow, latest.price * 0.0001)
+  const position = (latest.price - recentLow) / range
+  const previous = points[points.length - 6] ?? points[0]
+  const shortMomentum = previous ? (latest.price - previous.price) / previous.price : 0
+  const observations: PatternSignal[] = []
+
+  if (position <= 0.28) {
+    observations.push(buildFallbackObservation({
+      latest,
+      kind: 'support_rebound',
+      label: shortMomentum >= 0 ? '支撑观察' : '低位观察',
+      direction: shortMomentum >= 0 ? 'bullish' : 'neutral',
+      confidence: clamp(42 + (0.28 - position) * 22 + Math.max(shortMomentum, 0) * 1800, 38, 56),
+      keyPrice: recentLow,
+      invalidationPrice: recentLow * 0.997,
+      targetPrice: latest.price + Math.max(range * 0.35, latest.price * 0.0025),
+      summary: shortMomentum >= 0
+        ? '价格处于近期低位并出现轻微修复，属于候选支撑观察，还不是确认买点。'
+        : '价格靠近近期低位，但尚未形成明确反弹，继续等待承接确认。',
+      explanation: '这是严格形态为空时的候选观察，用来提示当前所处结构位置；需要后续站稳、赔率和数据源门槛共同确认。',
+      stateReason: '严格双底/锤子线/吞没等形态暂未成立，仅保留低位结构观察。',
+      contextTags: ['fallback_observation', 'low_location', 'candidate_only'],
+    }))
+  }
+
+  if (position >= 0.72) {
+    observations.push(buildFallbackObservation({
+      latest,
+      kind: 'resistance_rejection',
+      label: shortMomentum <= 0 ? '阻力观察' : '高位观察',
+      direction: shortMomentum <= 0 ? 'bearish' : 'neutral',
+      confidence: clamp(42 + (position - 0.72) * 22 + Math.max(-shortMomentum, 0) * 1800, 38, 56),
+      keyPrice: recentHigh,
+      invalidationPrice: recentHigh * 1.003,
+      targetPrice: latest.price - Math.max(range * 0.35, latest.price * 0.0025),
+      summary: shortMomentum <= 0
+        ? '价格位于近期高位并有放缓迹象，追多质量下降，属于候选阻力观察。'
+        : '价格靠近近期高位但还未回落确认，不能直接当作卖点。',
+      explanation: '这是严格形态为空时的候选观察，用来提示当前所处结构位置；突破或跌破关键位后才可升级。',
+      stateReason: '严格双顶/射击之星/看跌吞没等形态暂未成立，仅保留高位结构观察。',
+      contextTags: ['fallback_observation', 'high_location', 'candidate_only'],
+    }))
+  }
+
+  if (observations.length < 1) {
+    const recentSwings = swings.slice(-6)
+    observations.push(buildFallbackObservation({
+      latest,
+      kind: 'doji',
+      label: recentSwings.length >= 3 ? '震荡整理观察' : '形态孕育观察',
+      direction: 'neutral',
+      confidence: clamp(36 + recentSwings.length * 2, 34, 48),
+      keyPrice: latest.price,
+      invalidationPrice: null,
+      targetPrice: null,
+      summary: '当前价格处于近期区间中部，严格反转/突破形态暂未成立，先按震荡观察处理。',
+      explanation: '区间中部最容易出现假突破，形态未确认前不应把普通波动解释成买卖点。',
+      stateReason: '严格形态为空，价格也不在明确高低位，等待结构继续演化。',
+      contextTags: ['fallback_observation', 'range_middle', 'candidate_only'],
+    }))
+  }
+
+  return observations
+}
+
+function buildFallbackObservation(input: {
+  latest: PricePoint
+  kind: PatternSignal['kind']
+  label: string
+  direction: PatternSignal['direction']
+  confidence: number
+  keyPrice: number
+  invalidationPrice: number | null
+  targetPrice: number | null
+  summary: string
+  explanation: string
+  stateReason: string
+  contextTags: string[]
+}): PatternSignal {
+  return {
+    id: `pattern-fallback-${input.kind}-${input.latest.timestamp}`,
+    kind: input.kind,
+    label: input.label,
+    direction: input.direction,
+    confidence: Math.round(input.confidence),
+    confirmationStatus: 'candidate',
+    confirmationReason: '严格形态暂未确认，此项只是候选结构观察，不参与强提醒放大。',
+    confirmationPrice: null,
+    stateReason: input.stateReason,
+    cooldownBars: 0,
+    contextTags: input.contextTags,
+    detectedAt: input.latest.timestamp,
+    keyPrice: input.keyPrice,
+    necklinePrice: null,
+    invalidationPrice: input.invalidationPrice,
+    targetPrice: input.targetPrice,
+    expectedConfirmationBars: 2,
+    summary: input.summary,
+    explanation: input.explanation,
+  }
 }
 
 function detectCandlestickPatterns(points: PricePoint[]): PatternSignal[] {
@@ -479,19 +679,32 @@ function buildPricePoints(history: HistoryPoint[], latestQuote: QuoteSample) {
     if (!Number.isFinite(timestampMs) || !Number.isFinite(point.price) || point.price <= 0) {
       continue
     }
-    deduped.set(timestampMs, { timestamp: point.timestamp, price: point.price })
+    const minuteBucket = Math.floor(timestampMs / 60_000) * 60_000
+    deduped.set(minuteBucket, { timestamp: point.timestamp, price: point.price })
   }
   const latestMs = new Date(latestQuote.fetchedAt).getTime()
   if (Number.isFinite(latestMs) && Number.isFinite(latestQuote.price) && latestQuote.price > 0) {
-    deduped.set(latestMs, {
+    const latestMinuteBucket = Math.floor(latestMs / 60_000) * 60_000
+    deduped.set(latestMinuteBucket, {
       timestamp: latestQuote.fetchedAt,
       price: latestQuote.price,
     })
   }
 
-  return [...deduped.entries()]
+  const minutePoints = [...deduped.entries()]
     .sort((left, right) => left[0] - right[0])
     .map((entry) => entry[1])
+  const compressedPoints: PricePoint[] = []
+  for (const point of minutePoints) {
+    const previous = compressedPoints[compressedPoints.length - 1]
+    if (previous && Math.abs(previous.price - point.price) < 0.005) {
+      previous.timestamp = point.timestamp
+      continue
+    }
+    compressedPoints.push({ ...point })
+  }
+
+  return compressedPoints
     .slice(-180)
 }
 
@@ -515,9 +728,10 @@ function detectSwingPoints(points: PricePoint[]) {
   return swings
 }
 
-function detectDoubleBottom(points: PricePoint[], swings: SwingPoint[]): PatternSignal | null {
+function detectDoubleBottom(points: PricePoint[], swings: SwingPoint[]): PatternSignal[] {
   const lows = swings.filter((swing) => swing.type === 'low').slice(-6)
   const latest = points[points.length - 1]
+  const patterns: PatternSignal[] = []
   for (let rightIndex = lows.length - 1; rightIndex > 0; rightIndex -= 1) {
     const right = lows[rightIndex]
     for (let leftIndex = rightIndex - 1; leftIndex >= 0; leftIndex -= 1) {
@@ -532,16 +746,42 @@ function detectDoubleBottom(points: PricePoint[], swings: SwingPoint[]): Pattern
       const neckline = Math.max(...middle.map((point) => point.price))
       const rebound = (latest.price - right.price) / right.price
       const necklineDistance = (neckline - latest.price) / latest.price
-      const confirmed = latest.price >= neckline
       const invalidationPrice = Math.min(left.price, right.price) * 0.998
-      const failed = latest.price <= invalidationPrice
+      const afterRight = points.slice(right.index + 1)
+      const confirmationOffset = afterRight.findIndex((point) => point.price >= neckline)
+      const failureOffset = afterRight.findIndex((point) => point.price <= invalidationPrice)
+      const confirmationIndex = confirmationOffset >= 0 ? right.index + 1 + confirmationOffset : null
+      const failureIndex = failureOffset >= 0 ? right.index + 1 + failureOffset : null
+      const latestIndex = points.length - 1
+      const barsFromRight = latestIndex - right.index
+      const barsToConfirmation = confirmationIndex === null ? null : confirmationIndex - right.index
+      const barsFromConfirmation = confirmationIndex === null ? null : latestIndex - confirmationIndex
+      const barsFromFailure = failureIndex === null ? null : latestIndex - failureIndex
+      const failed = failureIndex !== null
+      const confirmed = !failed &&
+        confirmationIndex !== null &&
+        barsToConfirmation !== null &&
+        barsToConfirmation <= STRUCTURAL_CONFIRMATION_BARS &&
+        barsFromConfirmation !== null &&
+        barsFromConfirmation <= STRUCTURAL_ACTIVE_BARS
+      const candidateExpired = confirmationIndex === null && barsFromRight > STRUCTURAL_CANDIDATE_BARS
+      const confirmationTooLate = confirmationIndex !== null &&
+        barsToConfirmation !== null &&
+        barsToConfirmation > STRUCTURAL_CONFIRMATION_BARS
+      const confirmationExpired = confirmationIndex !== null &&
+        barsFromConfirmation !== null &&
+        barsFromConfirmation > STRUCTURAL_ACTIVE_BARS
+      const failureExpired = failed && barsFromFailure !== null && barsFromFailure > 6
+      if (candidateExpired || confirmationTooLate || confirmationExpired || failureExpired) {
+        continue
+      }
       const confidence = clamp(
         45 + (0.006 - similarity) * 5000 + Math.min(rebound * 2800, 18) - Math.max(necklineDistance, 0) * 700 + (confirmed ? 8 : failed ? 2 : -8),
         38,
         confirmed ? 82 : 64,
       )
 
-      return {
+      patterns.push({
         id: `pattern-double-bottom-${right.timestamp}`,
         kind: 'double_bottom',
         label: failed ? '双底失败冷却' : confirmed ? '双底确认' : '疑似双底',
@@ -551,13 +791,13 @@ function detectDoubleBottom(points: PricePoint[], swings: SwingPoint[]): Pattern
         confirmationReason: failed
           ? '价格跌破双底右底/左底防线，形态失败，进入 6 根 K 线冷却。'
           : confirmed
-          ? '最新价格已站上双底颈线，形态进入确认观察。'
+          ? '右底形成后在有效窗口内站上双底颈线，形态进入确认观察。'
           : '右底反弹尚未站上颈线，只能作为候选形态等待确认。',
         confirmationPrice: neckline,
         stateReason: failed
           ? '双底候选跌破失效价，冷却期内同类形态不能触发强观察。'
           : confirmed
-            ? '颈线已被收复，但仍需交易计划和赔率审核。'
+            ? '颈线在右底后的有效窗口内被收复，但仍需交易计划和赔率审核。'
             : '结构仅完成右底反弹，缺少颈线确认。',
         cooldownBars: failed ? 6 : 0,
         contextTags: failed
@@ -570,23 +810,24 @@ function detectDoubleBottom(points: PricePoint[], swings: SwingPoint[]): Pattern
         necklinePrice: neckline,
         invalidationPrice,
         targetPrice: neckline + Math.max(neckline - Math.min(left.price, right.price), 0),
-        expectedConfirmationBars: latest.price >= neckline ? 1 : 3,
+        expectedConfirmationBars: confirmed ? 1 : 3,
         summary: failed
           ? '双底候选已跌破失效价，短线不再按买点处理，等待新的结构重建。'
-          : latest.price >= neckline
+          : confirmed
           ? '双底颈线已接近确认，短线反弹结构增强。'
           : '右底不破左底且出现反弹，等待放量站上颈线确认。',
         explanation: '双底通常代表下跌后两次探底未破，说明低位承接增强；若后续跌破右底，形态失效。',
-      }
+      })
     }
   }
 
-  return null
+  return dedupeStructuralPatterns(patterns)
 }
 
-function detectDoubleTop(points: PricePoint[], swings: SwingPoint[]): PatternSignal | null {
+function detectDoubleTop(points: PricePoint[], swings: SwingPoint[]): PatternSignal[] {
   const highs = swings.filter((swing) => swing.type === 'high').slice(-6)
   const latest = points[points.length - 1]
+  const patterns: PatternSignal[] = []
   for (let rightIndex = highs.length - 1; rightIndex > 0; rightIndex -= 1) {
     const right = highs[rightIndex]
     for (let leftIndex = rightIndex - 1; leftIndex >= 0; leftIndex -= 1) {
@@ -601,16 +842,42 @@ function detectDoubleTop(points: PricePoint[], swings: SwingPoint[]): PatternSig
       const neckline = Math.min(...middle.map((point) => point.price))
       const rejection = (right.price - latest.price) / right.price
       const necklineDistance = (latest.price - neckline) / latest.price
-      const confirmed = latest.price <= neckline
       const invalidationPrice = Math.max(left.price, right.price) * 1.002
-      const failed = latest.price >= invalidationPrice
+      const afterRight = points.slice(right.index + 1)
+      const confirmationOffset = afterRight.findIndex((point) => point.price <= neckline)
+      const failureOffset = afterRight.findIndex((point) => point.price >= invalidationPrice)
+      const confirmationIndex = confirmationOffset >= 0 ? right.index + 1 + confirmationOffset : null
+      const failureIndex = failureOffset >= 0 ? right.index + 1 + failureOffset : null
+      const latestIndex = points.length - 1
+      const barsFromRight = latestIndex - right.index
+      const barsToConfirmation = confirmationIndex === null ? null : confirmationIndex - right.index
+      const barsFromConfirmation = confirmationIndex === null ? null : latestIndex - confirmationIndex
+      const barsFromFailure = failureIndex === null ? null : latestIndex - failureIndex
+      const failed = failureIndex !== null
+      const confirmed = !failed &&
+        confirmationIndex !== null &&
+        barsToConfirmation !== null &&
+        barsToConfirmation <= STRUCTURAL_CONFIRMATION_BARS &&
+        barsFromConfirmation !== null &&
+        barsFromConfirmation <= STRUCTURAL_ACTIVE_BARS
+      const candidateExpired = confirmationIndex === null && barsFromRight > STRUCTURAL_CANDIDATE_BARS
+      const confirmationTooLate = confirmationIndex !== null &&
+        barsToConfirmation !== null &&
+        barsToConfirmation > STRUCTURAL_CONFIRMATION_BARS
+      const confirmationExpired = confirmationIndex !== null &&
+        barsFromConfirmation !== null &&
+        barsFromConfirmation > STRUCTURAL_ACTIVE_BARS
+      const failureExpired = failed && barsFromFailure !== null && barsFromFailure > 6
+      if (candidateExpired || confirmationTooLate || confirmationExpired || failureExpired) {
+        continue
+      }
       const confidence = clamp(
         44 + (0.006 - similarity) * 4800 + Math.min(rejection * 2600, 20) - Math.max(necklineDistance, 0) * 450 + (confirmed ? 8 : failed ? 2 : -6),
         36,
         confirmed ? 80 : 64,
       )
 
-      return {
+      patterns.push({
         id: `pattern-double-top-${right.timestamp}`,
         kind: 'double_top',
         label: failed ? '双顶失败冷却' : confirmed ? '双顶确认' : '疑似双顶',
@@ -620,13 +887,13 @@ function detectDoubleTop(points: PricePoint[], swings: SwingPoint[]): PatternSig
         confirmationReason: failed
           ? '价格突破双顶前高防线，风险形态失败，进入 6 根 K 线冷却。'
           : confirmed
-          ? '最新价格已跌破双顶颈线，风险形态进入确认。'
+          ? '右肩形成后在有效窗口内跌破双顶颈线，风险形态进入确认。'
           : '两次冲高受阻但尚未跌破颈线，只能作为候选风险观察。',
         confirmationPrice: neckline,
         stateReason: failed
           ? '双顶候选突破失效价，冷却期内同类风险形态不能反复提示。'
           : confirmed
-            ? '颈线已跌破，但仍需结合位置、事件和赔率处理。'
+            ? '颈线在右肩后的有效窗口内跌破，但仍需结合位置、事件和赔率处理。'
             : '结构仅完成二次冲高，缺少颈线确认。',
         cooldownBars: failed ? 6 : 0,
         contextTags: failed
@@ -639,16 +906,29 @@ function detectDoubleTop(points: PricePoint[], swings: SwingPoint[]): PatternSig
         necklinePrice: neckline,
         invalidationPrice,
         targetPrice: neckline - Math.max(Math.max(left.price, right.price) - neckline, 0),
-        expectedConfirmationBars: latest.price <= neckline ? 1 : 3,
-        summary: latest.price <= neckline
+        expectedConfirmationBars: confirmed ? 1 : 3,
+        summary: confirmed
           ? '双顶颈线已跌破，短线风险信号增强。'
           : '两次冲高受阻，若跌破颈线需警惕回落加速。',
         explanation: '双顶通常代表上攻两次未能突破，说明高位抛压增强；若后续突破前高，形态失效。',
-      }
+      })
     }
   }
 
-  return null
+  return dedupeStructuralPatterns(patterns)
+}
+
+function dedupeStructuralPatterns(patterns: PatternSignal[]) {
+  const byRightPivot = new Map<string, PatternSignal>()
+  for (const pattern of patterns) {
+    const previous = byRightPivot.get(pattern.id)
+    if (!previous || pattern.confidence > previous.confidence) {
+      byRightPivot.set(pattern.id, pattern)
+    }
+  }
+  return [...byRightPivot.values()]
+    .sort((left, right) => right.confidence - left.confidence)
+    .slice(0, 3)
 }
 
 function detectSupportRebound(points: PricePoint[], swings: SwingPoint[]): PatternSignal | null {

@@ -3,10 +3,14 @@ import type {
   QuoteSample,
   QuoteSourceLedger,
   QuoteSourceLedgerEntry,
+  SourceSlaLedger,
+  SourceSlaLedgerEntry,
   SourceStatus,
 } from './types.js'
 
 const DISCREPANCY_WARNING_THRESHOLD = 0.004
+const FRESHNESS_WATCH_MS = 5 * 60 * 1000
+const FRESHNESS_STALE_MS = 15 * 60 * 1000
 
 export function buildQuoteSourceLedger(
   quote: QuoteSample,
@@ -91,6 +95,96 @@ export function buildQuoteSourceLedger(
     entries,
     warnings,
   }
+}
+
+export function buildSourceSlaLedger(
+  quote: QuoteSample,
+  sourceStatus: SourceStatus,
+  quoteLedger = buildQuoteSourceLedger(quote, sourceStatus),
+): SourceSlaLedger {
+  const generatedAt = quoteLedger.generatedAt
+  const entries = quoteLedger.entries.map((entry) => toSlaEntry(entry, sourceStatus, quoteLedger.consensus.status))
+  const tradeEntry = entries.find((entry) => entry.sourceId === quoteLedger.tradeSourceId)
+  const referenceEntries = entries.filter((entry) => entry.sourceType === 'reference_source')
+  const hasHealthyTradeSource = tradeEntry?.health === 'healthy'
+  const hasReferenceConflict = quoteLedger.consensus.status === 'diverged' ||
+    referenceEntries.some((entry) => entry.health === 'diverged')
+  const hasReferenceAnchor = referenceEntries.some((entry) => entry.canUseForStrongSignal)
+  const strongSignalEligible = Boolean(hasHealthyTradeSource && hasReferenceAnchor && !hasReferenceConflict)
+  const warnings = [
+    ...quoteLedger.warnings,
+    !hasHealthyTradeSource ? '主交易源未达到实时健康 SLA，强提醒自动降级。' : null,
+    !hasReferenceAnchor ? '缺少健康的 AU9999/AuTD/银行参考锚，强提醒缺少校准依据。' : null,
+    hasReferenceConflict ? '参考源和交易源偏离过大，先复核报价口径。' : null,
+  ].filter((item): item is string => Boolean(item))
+
+  return {
+    version: 'source-sla-ledger-v1',
+    generatedAt,
+    tradeSourceId: quoteLedger.tradeSourceId,
+    tradePrice: quoteLedger.tradePrice,
+    strongSignalEligible,
+    summary: strongSignalEligible
+      ? '主交易价实时健康，参考锚点未出现明显偏离，可进入强提醒候选。'
+      : '数据源 SLA 未全部通过，页面只允许观察或降级信号。',
+    entries,
+    warnings,
+  }
+}
+
+function toSlaEntry(
+  entry: QuoteSourceLedgerEntry,
+  sourceStatus: SourceStatus,
+  consensusStatus: QuoteSourceLedger['consensus']['status'],
+): SourceSlaLedgerEntry {
+  const sourceType = entry.tradable ? 'tradeable_source' : 'reference_source'
+  const health = classifySlaHealth(entry, sourceStatus, consensusStatus)
+  return {
+    sourceId: entry.sourceId,
+    label: entry.label,
+    sourceType,
+    instrument: entry.instrument,
+    price: entry.price,
+    timestamp: entry.timestamp,
+    freshnessMs: entry.freshnessMs,
+    health,
+    discrepancyFromTradePrice: entry.discrepancyFromTradePrice,
+    canUseForStrongSignal: entry.tradable
+      ? health === 'healthy'
+      : health === 'healthy' || health === 'watch',
+    note: entry.tradable
+      ? '真实可交易口径，所有行动口令以它为主。'
+      : '参考校准口径，只用于验证便宜/偏贵和异常，不直接生成交易指令。',
+  }
+}
+
+function classifySlaHealth(
+  entry: QuoteSourceLedgerEntry,
+  sourceStatus: SourceStatus,
+  consensusStatus: QuoteSourceLedger['consensus']['status'],
+): SourceSlaLedgerEntry['health'] {
+  if (entry.price === null) {
+    return 'missing'
+  }
+  if (entry.tradable && (sourceStatus.stale || sourceStatus.active === 'fallback')) {
+    return 'stale'
+  }
+  if (!entry.tradable && entry.discrepancyFromTradePrice !== null && Math.abs(entry.discrepancyFromTradePrice) >= DISCREPANCY_WARNING_THRESHOLD) {
+    return 'diverged'
+  }
+  if (entry.tradable && consensusStatus === 'diverged') {
+    return 'diverged'
+  }
+  if (entry.marketSession !== 'trading' && entry.freshnessMs !== null && entry.freshnessMs >= FRESHNESS_STALE_MS) {
+    return 'watch'
+  }
+  if (entry.freshnessMs !== null && entry.freshnessMs >= FRESHNESS_STALE_MS) {
+    return 'stale'
+  }
+  if (entry.freshnessMs !== null && entry.freshnessMs >= FRESHNESS_WATCH_MS) {
+    return 'watch'
+  }
+  return 'healthy'
 }
 
 function pushReference(

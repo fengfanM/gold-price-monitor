@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 
 const DEFAULT_PROVIDER_TIMEOUT_MS = Number(process.env.MARKET_PROVIDER_TIMEOUT_MS ?? '5000')
+const RSS_PROVIDER_TIMEOUT_MS = Number(process.env.MARKET_RSS_TIMEOUT_MS ?? '8000')
 const DISABLE_EXTERNAL_PROVIDERS = process.env.DISABLE_EXTERNAL_MARKET_CONTEXT === '1'
 const BROWSER_LIKE_HEADERS = {
   'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -708,6 +709,7 @@ export async function fetchGoldNewsSentiment(): Promise<ProviderResult<NewsSenti
       : [
           'https://news.google.com/rss/search?q=gold%20price%20OR%20GLD%20OR%20CFTC%20gold&hl=zh-CN&gl=CN&ceid=CN:zh-Hans',
           'https://news.google.com/rss/search?q=%E9%BB%84%E9%87%91%20%E7%BE%8E%E5%85%83%20%E7%BE%8E%E5%80%BA%20%E9%99%8D%E6%81%AF&hl=zh-CN&gl=CN&ceid=CN:zh-Hans',
+          'https://news.google.com/rss/search?q=gold%20price%20dollar%20yields%20Fed%20inflation&hl=en-US&gl=US&ceid=US:en',
         ]
     const titles = await fetchWeightedRssTitles(urls, '新闻')
     const sentiment = scoreWeightedTitles(titles)
@@ -730,6 +732,7 @@ export async function fetchGoldBloggerSentiment(): Promise<ProviderResult<NewsSe
       : [
           'https://news.google.com/rss/search?q=%E9%BB%84%E9%87%91%20%E5%88%86%E6%9E%90%E5%B8%88%20%E8%A7%82%E7%82%B9%20%E4%B9%B0%E7%82%B9&hl=zh-CN&gl=CN&ceid=CN:zh-Hans',
           'https://news.google.com/rss/search?q=gold%20analyst%20outlook%20bullion%20trader&hl=en-US&gl=US&ceid=US:en',
+          'https://news.google.com/rss/search?q=gold%20trader%20technical%20analysis%20bullion&hl=en-US&gl=US&ceid=US:en',
         ]
     const titles = await fetchWeightedRssTitles(fallbackUrls, '观点')
     const sentiment = scoreWeightedTitles(titles)
@@ -1255,12 +1258,10 @@ function scoreNewsTitle(title: string) {
 }
 
 async function fetchWeightedRssTitles(urls: string[], defaultSource: string) {
-  const titles: WeightedTitle[] = []
-  const errors: string[] = []
-
-  for (const url of urls) {
+  const results = await Promise.all(urls.map(async (url) => {
     try {
       const response = await fetchWithTimeout(url, {
+        timeoutMs: RSS_PROVIDER_TIMEOUT_MS,
         headers: {
           accept: 'application/rss+xml,text/xml,*/*',
         },
@@ -1273,14 +1274,16 @@ async function fetchWeightedRssTitles(urls: string[], defaultSource: string) {
       const text = await response.text()
       const feedTitles = [...text.matchAll(/<title><!\[CDATA\[(.*?)\]\]><\/title>|<title>(.*?)<\/title>/g)]
         .map((match) => decodeXml(match[1] ?? match[2] ?? '').trim())
-        .filter((title) => title && !title.includes('Google News'))
+        .filter((title) => isUsableRssTitle(title))
         .slice(0, 10)
         .map((title) => ({ title, source, weight }))
-      titles.push(...feedTitles)
+      return { titles: feedTitles, error: null }
     } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error))
+      return { titles: [], error: normalizeProviderError(error) }
     }
-  }
+  }))
+  const titles = results.flatMap((result) => result.titles)
+  const errors = results.flatMap((result) => result.error ? [result.error] : [])
 
   if (titles.length < 1) {
     throw new Error(`RSS 源均不可用或无标题：${errors.join('；')}`)
@@ -1298,6 +1301,19 @@ function scoreWeightedTitles(titles: WeightedTitle[]) {
     confidence: Math.min(86, 24 + scored.length * 3 + Math.min(totalWeight * 2, 18)),
     weightedAverage,
   }
+}
+
+function isUsableRssTitle(title: string) {
+  if (!title) {
+    return false
+  }
+  if (/^Google (News|新闻)$/i.test(title)) {
+    return false
+  }
+  if (/Google (News|新闻)$/i.test(title) && /^["“].+["”]\s+-\s+Google (News|新闻)$/i.test(title)) {
+    return false
+  }
+  return true
 }
 
 function inferSourceName(url: string, fallback: string) {
@@ -1381,22 +1397,33 @@ async function safeProvider<T>(
 
 async function fetchWithTimeout(
   url: string,
-  init: RequestInit = {},
+  init: RequestInit & { timeoutMs?: number } = {},
 ) {
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), DEFAULT_PROVIDER_TIMEOUT_MS)
+  const { timeoutMs, ...fetchInit } = init
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS)
   try {
     return await fetch(url, {
-      ...init,
+      ...fetchInit,
       signal: controller.signal,
       headers: {
         'user-agent': BROWSER_USER_AGENT,
-        ...init.headers,
+        ...fetchInit.headers,
       },
     })
   } finally {
     clearTimeout(timeoutId)
   }
+}
+
+function normalizeProviderError(error: unknown) {
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return `请求超时超过 ${RSS_PROVIDER_TIMEOUT_MS}ms`
+  }
+  if (error instanceof Error && /aborted/i.test(error.message)) {
+    return `请求超时超过 ${RSS_PROVIDER_TIMEOUT_MS}ms`
+  }
+  return error instanceof Error ? error.message : String(error)
 }
 
 function stripJsonPrefix(text: string) {

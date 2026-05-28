@@ -3,6 +3,9 @@ import type {
   EconomicEventCategory,
   EconomicEventImportance,
   EconomicEventRisk,
+  EventIntelligenceItem,
+  EventIntelligenceResponse,
+  EventIntelligenceSourceBoundary,
 } from './types.js'
 
 const MINUTE_MS = 60 * 1000
@@ -71,6 +74,60 @@ export function buildEconomicEventRisk(timestamp: string, configuredEvents = loa
   }
 }
 
+export function buildEventIntelligenceResponse(
+  timestamp: string,
+  configuredEvents = loadConfiguredEvents(),
+): EventIntelligenceResponse {
+  const risk = buildEconomicEventRisk(timestamp, configuredEvents)
+  const safeNowMs = Number.isFinite(new Date(timestamp).getTime())
+    ? new Date(timestamp).getTime()
+    : Date.now()
+  const allEvents = [
+    ...(risk.activeEvent ? [risk.activeEvent] : []),
+    ...risk.upcomingEvents,
+    ...buildEventObservationWatchlist(new Date(safeNowMs), configuredEvents),
+  ]
+  const uniqueEvents = new Map<string, EconomicEvent & { minutesToEvent: number }>()
+  for (const event of allEvents) {
+    uniqueEvents.set(event.id, event)
+  }
+  const items = Array.from(uniqueEvents.values())
+    .sort((left, right) => Math.abs(left.minutesToEvent) - Math.abs(right.minutesToEvent))
+    .map((event) => toEventIntelligenceItem(event, risk))
+
+  return {
+    version: 'event-intelligence-v4',
+    generatedAt: new Date().toISOString(),
+    current: risk,
+    activeItem: risk.activeEvent ? toEventIntelligenceItem(risk.activeEvent, risk) : null,
+    items,
+    sourceBoundaries: buildSourceBoundaries(),
+    summary: risk.summary,
+    usageBoundary: '事件智能仅用于风控、等待确认和仓位折减；configured 可进入生产风控，estimated 只能作为估算提醒，rss 与 mirror 当前只作观察/学习证据，不放大交易信号。',
+    warnings: [
+      ...risk.warnings,
+      '未配置真实日历时，NFP/CPI/PCE/FOMC 为常规发布时间估算，不代表官方最终发布时间。',
+      'RSS 新闻与镜像学习信号不得替代可交易报价源或真实事件日历。',
+    ],
+  }
+}
+
+function buildEventObservationWatchlist(
+  now: Date,
+  configuredEvents: EconomicEvent[],
+): Array<EconomicEvent & { minutesToEvent: number }> {
+  const safeNowMs = Number.isFinite(now.getTime()) ? now.getTime() : Date.now()
+  const horizonMinutes = 14 * 24 * 60
+  return [...configuredEvents, ...buildEstimatedMacroEvents(new Date(safeNowMs))]
+    .map((event) => ({
+      ...event,
+      minutesToEvent: Math.round((new Date(event.scheduledAt).getTime() - safeNowMs) / MINUTE_MS),
+    }))
+    .filter((event) => event.minutesToEvent >= 0 && event.minutesToEvent <= horizonMinutes)
+    .sort((left, right) => left.minutesToEvent - right.minutesToEvent)
+    .slice(0, 6)
+}
+
 function loadConfiguredEvents(): EconomicEvent[] {
   const raw = process.env.ECONOMIC_EVENT_CALENDAR_JSON
   if (!raw) {
@@ -85,6 +142,66 @@ function loadConfiguredEvents(): EconomicEvent[] {
   } catch {
     return []
   }
+}
+
+function toEventIntelligenceItem(
+  event: EconomicEvent & { minutesToEvent: number },
+  currentRisk: EconomicEventRisk,
+): EventIntelligenceItem {
+  const phase = eventPhase(event.minutesToEvent)
+  const severity = eventSeverity(event.importance, phase)
+  const isActive = currentRisk.activeEvent?.id === event.id
+  const boundary = sourceBoundary(event.source)
+  return {
+    ...event,
+    phase,
+    riskLevel: isActive ? currentRisk.level : severity.level,
+    scorePenalty: isActive ? currentRisk.scorePenalty : severity.scorePenalty,
+    scoreCap: isActive ? currentRisk.scoreCap : severity.scoreCap,
+    positionMultiplier: isActive ? currentRisk.positionMultiplier : severity.positionMultiplier,
+    sourceUsage: boundary.sourceUsage,
+    sourceBoundary: boundary.summary,
+    isProductionEligible: boundary.isProductionEligible,
+    warnings: buildEventWarnings(event, phase),
+  }
+}
+
+function buildSourceBoundaries(): EventIntelligenceSourceBoundary[] {
+  return (['configured', 'estimated', 'rss', 'mirror'] as const).map(sourceBoundary)
+}
+
+function sourceBoundary(source: EconomicEvent['source']): EventIntelligenceSourceBoundary {
+  const boundaries: Record<EconomicEvent['source'], EventIntelligenceSourceBoundary> = {
+    configured: {
+      source: 'configured',
+      sourceUsage: 'production_calendar',
+      isProductionEligible: true,
+      participatesInScoring: true,
+      summary: '人工/环境变量配置的明确事件时间，可进入事件风控评分与仓位折减。',
+    },
+    estimated: {
+      source: 'estimated',
+      sourceUsage: 'estimation_only',
+      isProductionEligible: false,
+      participatesInScoring: true,
+      summary: '基于常规发布时间生成的估算窗口，只用于提前提醒和保守降级，不能视为官方日历。',
+    },
+    rss: {
+      source: 'rss',
+      sourceUsage: 'news_watch_only',
+      isProductionEligible: false,
+      participatesInScoring: false,
+      summary: '新闻/RSS 只作为事件感知线索，不参与强提醒放大或独立交易评分。',
+    },
+    mirror: {
+      source: 'mirror',
+      sourceUsage: 'mirror_learning',
+      isProductionEligible: false,
+      participatesInScoring: false,
+      summary: '离线镜像/历史学习信号只用于复盘和证据解释，不作为实时生产触发器。',
+    },
+  }
+  return boundaries[source]
 }
 
 function normalizeConfiguredEvent(item: ConfiguredEconomicEvent, index: number): EconomicEvent[] {
@@ -194,7 +311,9 @@ function buildEventWarnings(event: EconomicEvent & { minutesToEvent: number }, p
       ? '事件前不追第一波，只允许观察或极轻仓等待确认。'
       : phase === 'post_first_wave'
         ? '事件后第一波不直接放大强信号，先等回踩/反抽验证真假突破。'
-        : '事件后进入二次确认期，仍需降低仓位并扩大容错。',
+        : phase === 'post_confirmation'
+          ? '事件后进入二次确认期，仍需降低仓位并扩大容错。'
+          : '当前不在核心事件风控窗口，临近事件时再提高等待确认要求。',
   ]
 }
 
